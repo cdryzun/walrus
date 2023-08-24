@@ -73,7 +73,7 @@ const (
 
 const (
 	// _applyCommands the commands to apply deployment of the application.
-	_applyCommands = "terraform init -no-color && terraform apply -auto-approve -no-color"
+	_applyCommands = "terraform init -no-color && terraform state list|grep kaniko_image|xargs -I {} terraform state rm {} && terraform apply -auto-approve -no-color"
 	// _destroyCommands the commands to destroy deployment of the application.
 	_destroyCommands = "terraform init -no-color && terraform destroy -auto-approve -no-color"
 )
