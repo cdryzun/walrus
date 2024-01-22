@@ -14,11 +14,14 @@ var (
 	// CliIgnoreKinds is a list of kinds to ignore when generating CLI commands.
 	cliIgnoreKinds = []string{
 		"Subject",
+		"ProjectSubject",
 		"Token",
 		"SubjectRole",
 		"Dashboard",
 		"TemplateCompletion",
 		"Cost",
+		"WorkflowStepExecution",
+		"Perspective",
 	}
 	// CliIgnorePaths is a list of paths to ignore when generating CLI commands.
 	cliIgnorePaths = []string{
@@ -28,10 +31,13 @@ var (
 		"/tokens",
 		"/tokens/:token",
 		"/projects/:project/environments/:environment/graph",
-		"/projects/:project/environments/:environment/services/:service/revisions/:servicerevision/terraform-states",
-		"/projects/:project/environments/:environment/services/_/graph",
-		"/projects/:project/environments/:environment/services/:service/graph",
-		"/projects/:project/environments/:environment/resources/:serviceresource/keys",
+		"/projects/:project/environments/:environment/apply",
+		"/projects/:project/environments/:environment/export",
+		"/projects/:project/environments/:environment/resources/:resource/revisions/:resourcerevision/log",
+		"/projects/:project/environments/:environment/resources/:resource/revisions/:resourcerevision/terraform-states",
+		"/projects/:project/environments/:environment/resources/_/graph",
+		"/projects/:project/environments/:environment/resources/:resource/graph",
+		"/projects/:project/environments/:environment/resources/:resourcecomponent/keys",
 		"/projects/:project/environments/:environment/resources/_/graph",
 		"/projects/:project/connectors/:connector/repositories",
 		"/projects/:project/connectors/:connector/repository-branches",
@@ -42,8 +48,8 @@ var (
 	}
 	// CliJsonYamlOutputFormatPaths is a list of paths that should be output as JSON/YAML.
 	cliJsonYamlOutputFormatPaths = []string{
-		"/projects/:project/environments/:environment/services/:service/revisions/:servicerevision/diff-latest",
-		"/projects/:project/environments/:environment/services/:service/revisions/:servicerevision/diff-previous",
+		"/projects/:project/environments/:environment/resources/:resource/revisions/:resourcerevision/diff-latest",
+		"/projects/:project/environments/:environment/resources/:resource/revisions/:resourcerevision/diff-previous",
 	}
 )
 
@@ -58,11 +64,21 @@ func extendOperationSchema(r *Route, op *openapi3.Operation) {
 	case slices.Contains(cliIgnorePaths, r.Path):
 		op.Extensions[openapi.ExtCliIgnore] = true
 	case r.Collection:
-		if r.Method != http.MethodGet {
-			op.Extensions[openapi.ExtCliIgnore] = true
-		} else {
+		switch {
+		case r.Method == http.MethodGet:
 			op.Extensions[openapi.ExtCliOperationName] = "list"
+		case r.Method == http.MethodPost:
+			op.Extensions[openapi.ExtCliCmdIgnore] = true
+			op.Extensions[openapi.ExtCliOperationName] = strs.Dasherize(r.GoFunc)
+		case r.Method == http.MethodDelete:
+			op.Extensions[openapi.ExtCliCmdIgnore] = true
+			op.Extensions[openapi.ExtCliOperationName] = strs.Dasherize(r.GoFunc)
+		default:
+			op.Extensions[openapi.ExtCliIgnore] = true
 		}
+	case r.GoFunc == resourceRouteNamePatch:
+		op.Extensions[openapi.ExtCliCmdIgnore] = true
+		op.Extensions[openapi.ExtCliOperationName] = strs.Dasherize(r.GoFunc)
 	case slices.Contains(
 		[]string{
 			resourceRouteNameCreate,

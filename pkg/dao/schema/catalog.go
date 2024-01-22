@@ -8,8 +8,10 @@ import (
 	"entgo.io/ent/schema/index"
 
 	"github.com/seal-io/walrus/pkg/dao/entx"
+	"github.com/seal-io/walrus/pkg/dao/schema/intercept"
 	"github.com/seal-io/walrus/pkg/dao/schema/mixin"
 	"github.com/seal-io/walrus/pkg/dao/types"
+	"github.com/seal-io/walrus/pkg/dao/types/object"
 )
 
 type Catalog struct {
@@ -25,8 +27,14 @@ func (Catalog) Mixin() []ent.Mixin {
 
 func (Catalog) Indexes() []ent.Index {
 	return []ent.Index{
+		index.Fields("project_id", "name").
+			Unique().
+			Annotations(
+				entsql.IndexWhere("project_id IS NOT NULL")),
 		index.Fields("name").
-			Unique(),
+			Unique().
+			Annotations(
+				entsql.IndexWhere("project_id IS NULL")),
 	}
 }
 
@@ -35,7 +43,8 @@ func (Catalog) Fields() []ent.Field {
 		field.String("type").
 			Comment("Type of the catalog.").
 			NotEmpty().
-			Immutable(),
+			Immutable().
+			StructTag(`json:"type,omitempty,cli-table-column"`),
 		field.String("source").
 			Comment("Source of the catalog.").
 			NotEmpty().
@@ -45,6 +54,10 @@ func (Catalog) Fields() []ent.Field {
 			Optional().
 			Annotations(
 				entx.SkipInput()),
+		object.IDField("project_id").
+			Comment("ID of the project to belong, empty means for all projects.").
+			Immutable().
+			Optional(),
 	}
 }
 
@@ -56,5 +69,20 @@ func (Catalog) Edges() []ent.Edge {
 			Annotations(
 				entsql.OnDelete(entsql.Cascade),
 				entx.SkipIO()),
+		// Project 1-* Catalogs.
+		edge.From("project", Project.Type).
+			Ref("catalogs").
+			Field("project_id").
+			Comment("Project to which the catalog belongs.").
+			Unique().
+			Immutable().
+			Annotations(
+				entx.ValidateContext(intercept.WithProjectInterceptor)),
+	}
+}
+
+func (Catalog) Interceptors() []ent.Interceptor {
+	return []ent.Interceptor{
+		intercept.ByProjectOptional("project_id"),
 	}
 }

@@ -9,18 +9,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
 	"github.com/seal-io/walrus/pkg/dao/model/template"
+	"github.com/seal-io/walrus/pkg/dao/schema/intercept"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
 	"github.com/seal-io/walrus/pkg/dao/types/status"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // TemplateCreateInput holds the creation input of the Template entity,
 // please tags with `path:",inline" json:",inline"` if embedding.
 type TemplateCreateInput struct {
 	inputConfig `path:"-" query:"-" json:"-"`
+
+	// Project indicates to create Template entity CAN under the Project route.
+	Project *ProjectQueryInput `path:",inline" query:"-" json:"-"`
 
 	// Source of the template.
 	Source string `path:"-" query:"-" json:"source"`
@@ -46,6 +52,10 @@ func (tci *TemplateCreateInput) Model() *Template {
 		Labels:      tci.Labels,
 	}
 
+	if tci.Project != nil {
+		_t.ProjectID = tci.Project.ID
+	}
+
 	return _t
 }
 
@@ -66,6 +76,17 @@ func (tci *TemplateCreateInput) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	if cache == nil {
 		cache = map[string]any{}
+	}
+
+	// Validate when creating under the Project route.
+	if tci.Project != nil {
+		if err := tci.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tci.Project = nil
+			}
+		}
 	}
 
 	return nil
@@ -101,6 +122,9 @@ func (tci *TemplateCreateInputsItem) ValidateWith(ctx context.Context, cs Client
 type TemplateCreateInputs struct {
 	inputConfig `path:"-" query:"-" json:"-"`
 
+	// Project indicates to create Template entity CAN under the Project route.
+	Project *ProjectQueryInput `path:",inline" query:"-" json:"-"`
+
 	// Items holds the entities to create, which MUST not be empty.
 	Items []*TemplateCreateInputsItem `path:"-" query:"-" json:"items"`
 }
@@ -120,6 +144,10 @@ func (tci *TemplateCreateInputs) Model() []*Template {
 			Name:        tci.Items[i].Name,
 			Description: tci.Items[i].Description,
 			Labels:      tci.Items[i].Labels,
+		}
+
+		if tci.Project != nil {
+			_t.ProjectID = tci.Project.ID
 		}
 
 		_ts[i] = _t
@@ -149,6 +177,17 @@ func (tci *TemplateCreateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 
 	if cache == nil {
 		cache = map[string]any{}
+	}
+
+	// Validate when creating under the Project route.
+	if tci.Project != nil {
+		if err := tci.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tci.Project = nil
+			}
+		}
 	}
 
 	for i := range tci.Items {
@@ -182,6 +221,9 @@ type TemplateDeleteInputsItem struct {
 // please tags with `path:",inline" json:",inline"` if embedding.
 type TemplateDeleteInputs struct {
 	inputConfig `path:"-" query:"-" json:"-"`
+
+	// Project indicates to delete Template entity CAN under the Project route.
+	Project *ProjectQueryInput `path:",inline" query:"-" json:"-"`
 
 	// Items holds the entities to create, which MUST not be empty.
 	Items []*TemplateDeleteInputsItem `path:"-" query:"-" json:"items"`
@@ -242,8 +284,29 @@ func (tdi *TemplateDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 
 	q := cs.Templates().Query()
 
+	// Validate when deleting under the Project route.
+	if tdi.Project != nil {
+		if err := tdi.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tdi.Project = nil
+				q.Where(
+					template.ProjectIDIsNil())
+			}
+		} else {
+			ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+			q.Where(
+				template.ProjectID(tdi.Project.ID))
+		}
+	} else {
+		q.Where(
+			template.ProjectIDIsNil())
+	}
+
 	ids := make([]object.ID, 0, len(tdi.Items))
 	ors := make([]predicate.Template, 0, len(tdi.Items))
+	indexers := make(map[any][]int)
 
 	for i := range tdi.Items {
 		if tdi.Items[i] == nil {
@@ -253,9 +316,12 @@ func (tdi *TemplateDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 		if tdi.Items[i].ID != "" {
 			ids = append(ids, tdi.Items[i].ID)
 			ors = append(ors, template.ID(tdi.Items[i].ID))
+			indexers[tdi.Items[i].ID] = append(indexers[tdi.Items[i].ID], i)
 		} else if tdi.Items[i].Name != "" {
 			ors = append(ors, template.And(
 				template.Name(tdi.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", tdi.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -282,10 +348,188 @@ func (tdi *TemplateDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 	}
 
 	for i := range es {
-		tdi.Items[i].ID = es[i].ID
-		tdi.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			tdi.Items[j].ID = es[i].ID
+			tdi.Items[j].Name = es[i].Name
+		}
 	}
 
+	return nil
+}
+
+// TemplatePatchInput holds the patch input of the Template entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type TemplatePatchInput struct {
+	TemplateQueryInput `path:",inline" query:"-" json:"-"`
+
+	// Name holds the value of the "name" field.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// Description holds the value of the "description" field.
+	Description string `path:"-" query:"-" json:"description,omitempty"`
+	// Labels holds the value of the "labels" field.
+	Labels map[string]string `path:"-" query:"-" json:"labels,omitempty"`
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+	// Status holds the value of the "status" field.
+	Status status.Status `path:"-" query:"-" json:"status,omitempty"`
+	// A URL to an SVG or PNG image to be used as an icon.
+	Icon string `path:"-" query:"-" json:"icon,omitempty"`
+	// Source of the template.
+	Source string `path:"-" query:"-" json:"source,omitempty"`
+
+	patchedEntity *Template `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Template partition entity for patching.
+func (tpi *TemplatePatchInput) PatchModel() *Template {
+	if tpi == nil {
+		return nil
+	}
+
+	_t := &Template{
+		Name:        tpi.Name,
+		Description: tpi.Description,
+		Labels:      tpi.Labels,
+		CreateTime:  tpi.CreateTime,
+		UpdateTime:  tpi.UpdateTime,
+		Status:      tpi.Status,
+		Icon:        tpi.Icon,
+		Source:      tpi.Source,
+	}
+
+	if tpi.Project != nil {
+		_t.ProjectID = tpi.Project.ID
+	}
+
+	return _t
+}
+
+// Model returns the Template patched entity,
+// after validating.
+func (tpi *TemplatePatchInput) Model() *Template {
+	if tpi == nil {
+		return nil
+	}
+
+	return tpi.patchedEntity
+}
+
+// Validate checks the TemplatePatchInput entity.
+func (tpi *TemplatePatchInput) Validate() error {
+	if tpi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return tpi.ValidateWith(tpi.inputConfig.Context, tpi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the TemplatePatchInput entity with the given context and client set.
+func (tpi *TemplatePatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := tpi.TemplateQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Templates().Query()
+
+	// Validate when querying under the Project route.
+	if tpi.Project != nil {
+		if err := tpi.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tpi.Project = nil
+				q.Where(
+					template.ProjectIDIsNil())
+			}
+		} else {
+			ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+			q.Where(
+				template.ProjectID(tpi.Project.ID))
+		}
+	} else {
+		q.Where(
+			template.ProjectIDIsNil())
+	}
+
+	if tpi.Refer != nil {
+		if tpi.Refer.IsID() {
+			q.Where(
+				template.ID(tpi.Refer.ID()))
+		} else if refers := tpi.Refer.Split(1); len(refers) == 1 {
+			q.Where(
+				template.Name(refers[0].String()))
+		} else {
+			return errors.New("invalid identify refer of template")
+		}
+	} else if tpi.ID != "" {
+		q.Where(
+			template.ID(tpi.ID))
+	} else if tpi.Name != "" {
+		q.Where(
+			template.Name(tpi.Name))
+	} else {
+		return errors.New("invalid identify of template")
+	}
+
+	q.Select(
+		template.WithoutFields(
+			template.FieldCreateTime,
+			template.FieldUpdateTime,
+			template.FieldStatus,
+			template.FieldIcon,
+		)...,
+	)
+
+	var e *Template
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Template)
+		}
+	}
+
+	_pm := tpi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Template)
+
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+	if e.Source != _obj.Source {
+		return errors.New("field source is immutable")
+	}
+
+	tpi.patchedEntity = _obj
 	return nil
 }
 
@@ -293,6 +537,9 @@ func (tdi *TemplateDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 // please tags with `path:",inline"` if embedding.
 type TemplateQueryInput struct {
 	inputConfig `path:"-" query:"-" json:"-"`
+
+	// Project indicates to query Template entity CAN under the Project route.
+	Project *ProjectQueryInput `path:",inline" query:"-" json:"project,omitempty"`
 
 	// Refer holds the route path reference of the Template entity.
 	Refer *object.Refer `path:"template,default=" query:"-" json:"-"`
@@ -339,6 +586,26 @@ func (tqi *TemplateQueryInput) ValidateWith(ctx context.Context, cs ClientSet, c
 	}
 
 	q := cs.Templates().Query()
+
+	// Validate when querying under the Project route.
+	if tqi.Project != nil {
+		if err := tqi.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tqi.Project = nil
+				q.Where(
+					template.ProjectIDIsNil())
+			}
+		} else {
+			ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+			q.Where(
+				template.ProjectID(tqi.Project.ID))
+		}
+	} else {
+		q.Where(
+			template.ProjectIDIsNil())
+	}
 
 	if tqi.Refer != nil {
 		if tqi.Refer.IsID() {
@@ -393,6 +660,9 @@ func (tqi *TemplateQueryInput) ValidateWith(ctx context.Context, cs ClientSet, c
 // please tags with `path:",inline" query:",inline"` if embedding.
 type TemplateQueryInputs struct {
 	inputConfig `path:"-" query:"-" json:"-"`
+
+	// Project indicates to query Template entity CAN under the Project route.
+	Project *ProjectQueryInput `path:",inline" query:"-" json:"-"`
 }
 
 // Validate checks the TemplateQueryInputs entity.
@@ -412,6 +682,17 @@ func (tqi *TemplateQueryInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	if cache == nil {
 		cache = map[string]any{}
+	}
+
+	// Validate when querying under the Project route.
+	if tqi.Project != nil {
+		if err := tqi.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tqi.Project = nil
+			}
+		}
 	}
 
 	return nil
@@ -498,6 +779,9 @@ func (tui *TemplateUpdateInputsItem) ValidateWith(ctx context.Context, cs Client
 type TemplateUpdateInputs struct {
 	inputConfig `path:"-" query:"-" json:"-"`
 
+	// Project indicates to update Template entity CAN under the Project route.
+	Project *ProjectQueryInput `path:",inline" query:"-" json:"-"`
+
 	// Items holds the entities to create, which MUST not be empty.
 	Items []*TemplateUpdateInputsItem `path:"-" query:"-" json:"items"`
 }
@@ -564,8 +848,29 @@ func (tui *TemplateUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 
 	q := cs.Templates().Query()
 
+	// Validate when updating under the Project route.
+	if tui.Project != nil {
+		if err := tui.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				tui.Project = nil
+				q.Where(
+					template.ProjectIDIsNil())
+			}
+		} else {
+			ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+			q.Where(
+				template.ProjectID(tui.Project.ID))
+		}
+	} else {
+		q.Where(
+			template.ProjectIDIsNil())
+	}
+
 	ids := make([]object.ID, 0, len(tui.Items))
 	ors := make([]predicate.Template, 0, len(tui.Items))
+	indexers := make(map[any][]int)
 
 	for i := range tui.Items {
 		if tui.Items[i] == nil {
@@ -575,9 +880,12 @@ func (tui *TemplateUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 		if tui.Items[i].ID != "" {
 			ids = append(ids, tui.Items[i].ID)
 			ors = append(ors, template.ID(tui.Items[i].ID))
+			indexers[tui.Items[i].ID] = append(indexers[tui.Items[i].ID], i)
 		} else if tui.Items[i].Name != "" {
 			ors = append(ors, template.And(
 				template.Name(tui.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", tui.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -604,15 +912,18 @@ func (tui *TemplateUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 	}
 
 	for i := range es {
-		tui.Items[i].ID = es[i].ID
-		tui.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			tui.Items[j].ID = es[i].ID
+			tui.Items[j].Name = es[i].Name
+		}
 	}
 
 	for i := range tui.Items {
-		if tui.Items[i] == nil {
-			continue
-		}
-
 		if err := tui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}
@@ -634,6 +945,7 @@ type TemplateOutput struct {
 	Source      string            `json:"source,omitempty"`
 
 	Catalog *CatalogOutput `json:"catalog,omitempty"`
+	Project *ProjectOutput `json:"project,omitempty"`
 }
 
 // View returns the output of Template entity.
@@ -669,6 +981,13 @@ func ExposeTemplate(_t *Template) *TemplateOutput {
 	} else if _t.CatalogID != "" {
 		to.Catalog = &CatalogOutput{
 			ID: _t.CatalogID,
+		}
+	}
+	if _t.Edges.Project != nil {
+		to.Project = ExposeProject(_t.Edges.Project)
+	} else if _t.ProjectID != "" {
+		to.Project = &ProjectOutput{
+			ID: _t.ProjectID,
 		}
 	}
 	return to

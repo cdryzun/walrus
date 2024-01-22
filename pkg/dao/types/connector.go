@@ -1,12 +1,14 @@
 package types
 
 const (
-	ConnectorTypeK8s     string = "Kubernetes"
-	ConnectorTypeAlibaba string = "Alibaba"
-	ConnectorTypeAWS     string = "AWS"
+	ConnectorTypeDocker     string = "Docker"
+	ConnectorTypeKubernetes string = "Kubernetes"
+	ConnectorTypeAlibaba    string = "Alibaba"
+	ConnectorTypeAWS        string = "AWS"
 )
 
 const (
+	ConnectorCategoryDocker         string = "Docker"
 	ConnectorCategoryKubernetes     string = "Kubernetes"
 	ConnectorCategoryCustom         string = "Custom"
 	ConnectorCategoryVersionControl string = "VersionControl"

@@ -78,6 +78,14 @@ var (
 func (h Handler) CollectionGet(req CollectionGetRequest) (CollectionGetResponse, int, error) {
 	query := h.modelClient.Catalogs().Query()
 
+	if req.Project != nil {
+		// Handle project scope request.
+		query.Where(catalog.ProjectID(req.Project.ID))
+	} else {
+		// Handle global scope request.
+		query.Where(catalog.ProjectIDIsNil())
+	}
+
 	if queries, ok := req.Querying(queryFields); ok {
 		query = query.Where(queries)
 	}
@@ -114,10 +122,12 @@ func (h Handler) CollectionGet(req CollectionGetRequest) (CollectionGetResponse,
 
 			var items []*model.CatalogOutput
 
+			ids := dm.IDs()
+
 			switch dm.Type {
 			case modelchange.EventTypeCreate, modelchange.EventTypeUpdate:
 				entities, err := query.Clone().
-					Where(catalog.IDIn(dm.IDs...)).
+					Where(catalog.IDIn(ids...)).
 					Unique(false).
 					All(stream)
 				if err != nil {
@@ -126,10 +136,11 @@ func (h Handler) CollectionGet(req CollectionGetRequest) (CollectionGetResponse,
 
 				items = model.ExposeCatalogs(entities)
 			case modelchange.EventTypeDelete:
-				items = make([]*model.CatalogOutput, len(dm.IDs))
-				for i := range dm.IDs {
+				items = make([]*model.CatalogOutput, len(ids))
+				for i := range ids {
 					items[i] = &model.CatalogOutput{
-						ID: dm.IDs[i],
+						ID:   ids[i],
+						Name: dm.Data[i].Name,
 					}
 				}
 			}

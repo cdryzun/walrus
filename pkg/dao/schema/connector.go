@@ -53,16 +53,24 @@ func (Connector) Fields() []ent.Field {
 			Optional(),
 		field.String("category").
 			Comment("Category of the connector.").
-			Immutable().
 			NotEmpty().
+			Immutable().
+			StructTag(`json:"category,omitempty,cli-table-column"`).
 			Annotations(
 				entx.Input()),
 		field.String("type").
 			Comment("Type of the connector.").
 			NotEmpty().
 			Immutable().
+			StructTag(`json:"type,omitempty,cli-table-column"`).
 			Annotations(
 				entx.Input()),
+		field.String("applicable_environment_type").
+			Comment("Environment type of the connector to apply.").
+			NotEmpty().
+			Immutable().
+			Annotations(
+				entx.Input(entx.WithQuery())),
 		field.String("config_version").
 			Comment("Connector config version.").
 			NotEmpty(),
@@ -100,9 +108,9 @@ func (Connector) Edges() []ent.Edge {
 			Through("environment_connector_relationships", EnvironmentConnectorRelationship.Type).
 			Annotations(
 				entx.SkipIO()),
-		// Connector 1-* ServiceResources.
-		edge.To("resources", ServiceResource.Type).
-			Comment("ServiceResources that use the connector.").
+		// Connector 1-* ResourceComponents.
+		edge.To("resource_components", ResourceComponent.Type).
+			Comment("ResourceComponents that use the connector.").
 			Annotations(
 				entsql.OnDelete(entsql.Restrict),
 				entx.SkipIO()),
@@ -122,7 +130,7 @@ func (Connector) Hooks() []ent.Hook {
 				return n.Mutate(ctx, m)
 			}
 
-			if v, ok := m.Field("type"); !ok || v.(string) != types.ConnectorTypeK8s {
+			if v, ok := m.Field("type"); !ok || v.(string) != types.ConnectorTypeKubernetes {
 				return n.Mutate(ctx, m)
 			}
 

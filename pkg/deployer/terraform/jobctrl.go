@@ -18,7 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	revisionbus "github.com/seal-io/walrus/pkg/bus/servicerevision"
+	revisionbus "github.com/seal-io/walrus/pkg/bus/resourcerevision"
 	"github.com/seal-io/walrus/pkg/dao/model"
 	"github.com/seal-io/walrus/pkg/dao/types"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
@@ -26,6 +26,7 @@ import (
 	opk8s "github.com/seal-io/walrus/pkg/operator/k8s"
 	"github.com/seal-io/walrus/pkg/operator/k8s/kube"
 	"github.com/seal-io/walrus/utils/log"
+	"github.com/seal-io/walrus/utils/pointer"
 )
 
 const (
@@ -35,10 +36,11 @@ const (
 
 type JobCreateOptions struct {
 	// Type is the deployment type of job, apply or destroy or other.
-	Type              string
-	ServiceRevisionID string
-	Image             string
-	Env               []corev1.EnvVar
+	Type               string
+	ResourceRevisionID string
+	Image              string
+	Env                []corev1.EnvVar
+	DockerMode         bool
 }
 
 type StreamJobLogsOptions struct {
@@ -114,12 +116,13 @@ func (r JobReconciler) syncApplicationRevisionStatus(ctx context.Context, job *b
 		return nil
 	}
 
-	appRevision, err := r.ModelClient.ServiceRevisions().Get(ctx, object.ID(appRevisionID))
+	appRevision, err := r.ModelClient.ResourceRevisions().Get(ctx, object.ID(appRevisionID))
 	if err != nil {
 		return err
 	}
+
 	// If the application revision status is not running, then skip it.
-	if appRevision.Status != status.ServiceRevisionStatusRunning {
+	if !status.ResourceRevisionStatusReady.IsUnknown(appRevision) {
 		return nil
 	}
 
@@ -127,12 +130,13 @@ func (r JobReconciler) syncApplicationRevisionStatus(ctx context.Context, job *b
 		return nil
 	}
 
-	revisionStatus := status.ServiceRevisionStatusSucceeded
+	status.ResourceRevisionStatusReady.True(appRevision, "")
+
 	// Get job pods logs.
-	revisionStatusMessage, rerr := r.getJobPodsLogs(ctx, job.Name)
-	if rerr != nil {
-		r.Logger.Error(rerr, "failed to get job pod logs", "application-revision", appRevisionID)
-		revisionStatusMessage = rerr.Error()
+	record, err := r.getJobPodsLogs(ctx, job.Name)
+	if err != nil {
+		r.Logger.Error(err, "failed to get job pod logs", "application-revision", appRevisionID)
+		record = err.Error()
 	}
 
 	if job.Status.Succeeded > 0 {
@@ -141,17 +145,17 @@ func (r JobReconciler) syncApplicationRevisionStatus(ctx context.Context, job *b
 
 	if job.Status.Failed > 0 {
 		r.Logger.Info("failed", "application-revision", appRevisionID)
-		revisionStatus = status.ServiceRevisionStatusFailed
+		status.ResourceRevisionStatusReady.False(appRevision, "")
 	}
 
 	// Report to application revision.
-	appRevision.Status = revisionStatus
-	appRevision.StatusMessage = revisionStatusMessage
+	appRevision.Record = record
+	appRevision.Status.SetSummary(status.WalkResourceRevision(&appRevision.Status))
 	appRevision.Duration = int(time.Since(*appRevision.CreateTime).Seconds())
 
-	appRevision, err = r.ModelClient.ServiceRevisions().UpdateOne(appRevision).
+	appRevision, err = r.ModelClient.ResourceRevisions().UpdateOne(appRevision).
 		SetStatus(appRevision.Status).
-		SetStatusMessage(appRevision.StatusMessage).
+		SetRecord(appRevision.Record).
 		SetDuration(appRevision.Duration).
 		Save(ctx)
 	if err != nil {
@@ -199,8 +203,8 @@ func CreateJob(ctx context.Context, clientSet *kubernetes.Clientset, opts JobCre
 
 		backoffLimit            int32 = 0
 		ttlSecondsAfterFinished int32 = 3600
-		name                          = getK8sJobName(_jobNameFormat, opts.Type, opts.ServiceRevisionID)
-		configName                    = _jobSecretPrefix + opts.ServiceRevisionID
+		name                          = getK8sJobName(_jobNameFormat, opts.Type, opts.ResourceRevisionID)
+		configName                    = _jobSecretPrefix + opts.ResourceRevisionID
 	)
 
 	secret, err := clientSet.CoreV1().Secrets(types.WalrusSystemNamespace).Get(ctx, configName, metav1.GetOptions{})
@@ -208,7 +212,7 @@ func CreateJob(ctx context.Context, clientSet *kubernetes.Clientset, opts JobCre
 		return err
 	}
 
-	podTemplate := getPodTemplate(opts.ServiceRevisionID, configName, opts)
+	podTemplate := getPodTemplate(opts.ResourceRevisionID, configName, opts)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -284,6 +288,44 @@ func getPodTemplate(applicationRevisionID, configName string, opts JobCreateOpti
 
 	command = append(command, deployCommand)
 
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      configName,
+			MountPath: _secretMountPath,
+			ReadOnly:  false,
+		},
+	}
+
+	volumes := []corev1.Volume{
+		{
+			Name: configName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: configName,
+				},
+			},
+		},
+	}
+
+	securityContext := &corev1.PodSecurityContext{}
+
+	if opts.DockerMode {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "docker-sock",
+			MountPath: "/var/run/docker.sock",
+		})
+
+		volumes = append(volumes, corev1.Volume{
+			Name: "docker-sock",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: "/var/run/docker.sock",
+				},
+			},
+		})
+		securityContext.RunAsUser = pointer.Int64(0)
+	}
+
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: _podName,
@@ -293,6 +335,7 @@ func getPodTemplate(applicationRevisionID, configName string, opts JobCreateOpti
 		},
 		Spec: corev1.PodSpec{
 			HostNetwork:        true,
+			DNSPolicy:          corev1.DNSClusterFirstWithHostNet,
 			ServiceAccountName: types.DeployerServiceAccountName,
 			RestartPolicy:      corev1.RestartPolicyNever,
 			Containers: []corev1.Container{
@@ -302,26 +345,12 @@ func getPodTemplate(applicationRevisionID, configName string, opts JobCreateOpti
 					WorkingDir:      _workdir,
 					Command:         command,
 					ImagePullPolicy: corev1.PullIfNotPresent,
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      configName,
-							MountPath: _secretMountPath,
-							ReadOnly:  false,
-						},
-					},
-					Env: opts.Env,
+					VolumeMounts:    volumeMounts,
+					Env:             opts.Env,
 				},
 			},
-			Volumes: []corev1.Volume{
-				{
-					Name: configName,
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: configName,
-						},
-					},
-				},
-			},
+			Volumes:         volumes,
+			SecurityContext: securityContext,
 		},
 	}
 }
@@ -348,31 +377,33 @@ func StreamJobLogs(ctx context.Context, opts StreamJobLogsOptions) error {
 		return nil
 	}
 
-	jobPod := podList.Items[0]
+	jobPod := &podList.Items[0]
 
 	err = wait.PollUntilContextTimeout(ctx, 1*time.Second, 1*time.Minute, true,
 		func(ctx context.Context) (bool, error) {
-			pod, getErr := opts.Cli.Pods(types.WalrusSystemNamespace).Get(ctx, jobPod.Name, metav1.GetOptions{
+			var getErr error
+
+			jobPod, getErr = opts.Cli.Pods(types.WalrusSystemNamespace).Get(ctx, jobPod.Name, metav1.GetOptions{
 				ResourceVersion: "0",
 			})
 			if getErr != nil {
 				return false, getErr
 			}
 
-			return kube.IsPodReady(pod), nil
+			return kube.IsPodReady(jobPod), nil
 		})
 	if err != nil {
 		return err
 	}
 
-	states := kube.GetContainerStates(&jobPod)
+	states := kube.GetContainerStates(jobPod)
 	if len(states) == 0 {
 		return nil
 	}
 
 	var (
 		containerName, containerType = states[0].Name, states[0].Type
-		follow                       = kube.IsContainerRunning(&jobPod, kube.Container{
+		follow                       = kube.IsContainerRunning(jobPod, kube.Container{
 			Type: containerType,
 			Name: containerName,
 		})

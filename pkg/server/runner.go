@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	stdlog "log"
 	"net"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
@@ -16,11 +19,13 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog"
-	klogv2 "k8s.io/klog/v2"
+	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/klog/v2"
 
 	"github.com/seal-io/walrus/pkg/apis"
 	"github.com/seal-io/walrus/pkg/cache"
@@ -28,15 +33,18 @@ import (
 	"github.com/seal-io/walrus/pkg/cron"
 	"github.com/seal-io/walrus/pkg/dao/model"
 	_ "github.com/seal-io/walrus/pkg/dao/model/runtime" // Default = ent.
+	"github.com/seal-io/walrus/pkg/dao/types"
 	"github.com/seal-io/walrus/pkg/dao/types/crypto"
 	"github.com/seal-io/walrus/pkg/database"
 	"github.com/seal-io/walrus/pkg/datalisten"
 	"github.com/seal-io/walrus/pkg/k8s"
+	"github.com/seal-io/walrus/pkg/servervars"
 	"github.com/seal-io/walrus/utils/clis"
 	"github.com/seal-io/walrus/utils/cryptox"
 	"github.com/seal-io/walrus/utils/files"
 	"github.com/seal-io/walrus/utils/gopool"
 	"github.com/seal-io/walrus/utils/log"
+	"github.com/seal-io/walrus/utils/runtimex"
 	"github.com/seal-io/walrus/utils/strs"
 	"github.com/seal-io/walrus/utils/version"
 )
@@ -44,23 +52,26 @@ import (
 type Server struct {
 	Logger clis.Logger
 
-	BindAddress        string
-	BindWithDualStack  bool
-	EnableTls          bool
-	TlsCertFile        string
-	TlsPrivateKeyFile  string
-	TlsCertDir         string
-	TlsAutoCertDomains []string
-	BootstrapPassword  string
-	ConnQPS            int
-	ConnBurst          int
-	GopoolWorkerFactor int
+	BindAddress           string
+	BindWithDualStack     bool
+	EnableTls             bool
+	TlsCertFile           string
+	TlsPrivateKeyFile     string
+	TlsCertDir            string
+	TlsAutoCertDomains    []string
+	BootstrapPassword     string
+	ConnQPS               int
+	ConnBurst             int
+	WebsocketConnMaxPerIP int
+	GopoolWorkerFactor    int
 
-	KubeConfig         string
-	KubeConnTimeout    time.Duration
-	KubeConnQPS        float64
-	KubeConnBurst      int
-	KubeLeaderElection bool
+	KubeConfig             string
+	KubeConnTimeout        time.Duration
+	KubeConnQPS            float64
+	KubeConnBurst          int
+	KubeLeaderElection     bool
+	KubeLeaderLease        time.Duration
+	KubeLeaderRenewTimeout time.Duration
 
 	DataSourceAddress        string
 	DataSourceConnMaxOpen    int
@@ -74,29 +85,34 @@ type Server struct {
 	CacheSourceConnMaxIdle int
 	CacheSourceMaxLife     time.Duration
 
-	EnableAuthn         bool
-	AuthnSessionMaxIdle time.Duration
-	CasdoorServer       string
+	EnableAuthn            bool
+	AuthnSessionMaxIdle    time.Duration
+	CasdoorServer          string
+	BuiltinCatalogProvider string
 }
 
 func New() *Server {
 	return &Server{
-		BindAddress:           "0.0.0.0",
-		BindWithDualStack:     true,
-		EnableTls:             true,
-		TlsCertDir:            apis.TlsCertDirByK8sSecrets,
-		ConnQPS:               10,
-		ConnBurst:             20,
-		KubeConnTimeout:       5 * time.Minute,
-		KubeConnQPS:           16,
-		KubeConnBurst:         64,
-		KubeLeaderElection:    true,
-		DataSourceConnMaxOpen: 15,
-		DataSourceConnMaxIdle: 5,
-		DataSourceConnMaxLife: 10 * time.Minute,
-		EnableAuthn:           true,
-		AuthnSessionMaxIdle:   30 * time.Minute,
-		GopoolWorkerFactor:    100,
+		BindAddress:            "0.0.0.0",
+		BindWithDualStack:      true,
+		EnableTls:              true,
+		TlsCertDir:             apis.TlsCertDirByK8sSecrets,
+		ConnQPS:                10,
+		ConnBurst:              20,
+		WebsocketConnMaxPerIP:  25,
+		KubeConnTimeout:        5 * time.Minute,
+		KubeConnQPS:            16,
+		KubeConnBurst:          64,
+		KubeLeaderElection:     true,
+		KubeLeaderLease:        15 * time.Second,
+		KubeLeaderRenewTimeout: 10 * time.Second,
+		DataSourceConnMaxOpen:  15,
+		DataSourceConnMaxIdle:  5,
+		DataSourceConnMaxLife:  10 * time.Minute,
+		EnableAuthn:            true,
+		AuthnSessionMaxIdle:    30 * time.Minute,
+		GopoolWorkerFactor:     100,
+		BuiltinCatalogProvider: types.GitDriverGithub,
 	}
 }
 
@@ -125,6 +141,23 @@ func (r *Server) Flags(cmd *cli.Command) {
 			Usage:       "Enable HTTPs.",
 			Destination: &r.EnableTls,
 			Value:       r.EnableTls,
+		},
+		&cli.StringFlag{
+			Name: "builtin-catalog-provider",
+			Usage: "Specify the provider type for creating builtin catalogs: 'github' or 'gitee'. " +
+				"This parameter is case-insensitive.",
+			Destination: &r.BuiltinCatalogProvider,
+			Value:       r.BuiltinCatalogProvider,
+			Action: func(c *cli.Context, s string) error {
+				s = strs.Title(strings.ToLower(s))
+				switch s {
+				case types.GitDriverGithub, types.GitDriverGitee:
+					r.BuiltinCatalogProvider = s
+				default:
+					return errors.New("--builtin-catalog-provider: only support github or gitee")
+				}
+				return nil
+			},
 		},
 		&cli.StringFlag{
 			Name: "tls-cert-file",
@@ -222,6 +255,12 @@ func (r *Server) Flags(cmd *cli.Command) {
 			Destination: &r.ConnBurst,
 			Value:       r.ConnBurst,
 		},
+		&cli.IntFlag{
+			Name:        "websocket-conn-max-per-ip",
+			Usage:       "The maximum number of websocket connections per IP.",
+			Destination: &r.WebsocketConnMaxPerIP,
+			Value:       r.WebsocketConnMaxPerIP,
+		},
 		&cli.StringFlag{
 			Name:        "kubeconfig",
 			Usage:       "The configuration path of the worker kubernetes cluster.",
@@ -252,6 +291,45 @@ func (r *Server) Flags(cmd *cli.Command) {
 				"leader election is primarily used in multi-instance deployments.",
 			Destination: &r.KubeLeaderElection,
 			Value:       r.KubeLeaderElection,
+		},
+		&cli.DurationFlag{
+			Name: "kube-leader-lease",
+			Usage: "The duration to keep the leadership. " +
+				"If --kube-leader-election=false, this flag will be ignored. " +
+				"When the network environment is not ideal or do not want to cause frequent access to the cluster, " +
+				"please increase the value appropriately.",
+			Destination: &r.KubeLeaderLease,
+			Value:       r.KubeLeaderLease,
+			Action: func(c *cli.Context, d time.Duration) error {
+				// From k8s.io/client-go/tools/leaderelection.NewLeaderElector.
+				if d < 1 {
+					return errors.New("--kube-leader-lease: must be greater than zero")
+				}
+				if d <= c.Duration("kube-leader-renew-timeout") {
+					return errors.New("--kube-leader-lease: must be greater than --kube-leader-renew-timeout")
+				}
+				return nil
+			},
+		},
+		&cli.DurationFlag{
+			Name: "kube-leader-renew-timeout",
+			Usage: "The duration to renew the leadership before give up, " +
+				"must be less than the duration of --kube-leader-lease." +
+				"If --kube-leader-election=false, this flag will be ignored. " +
+				"When the network environment is not ideal, please increase the value appropriately.",
+			Destination: &r.KubeLeaderRenewTimeout,
+			Value:       r.KubeLeaderRenewTimeout,
+			Action: func(c *cli.Context, d time.Duration) error {
+				// From k8s.io/client-go/tools/leaderelection.NewLeaderElector.
+				if d < 1 {
+					return errors.New("--kube-leader-renew-timeout: must be greater than zero")
+				}
+				jitter := time.Duration(leaderelection.JitterFactor * float64(2*time.Second))
+				if d <= jitter {
+					return fmt.Errorf("--kube-leader-renew-timeout: must be greater than %v", jitter)
+				}
+				return nil
+			},
 		},
 		&cli.StringFlag{
 			Name: "data-source-address",
@@ -383,13 +461,40 @@ func (r *Server) Flags(cmd *cli.Command) {
 }
 
 func (r *Server) Before(cmd *cli.Command) {
+	pb := cmd.Before
+	cmd.Before = func(c *cli.Context) error {
+		l := log.GetLogger()
+
+		// Sink the output of standard logger to util logger.
+		stdlog.SetOutput(l)
+
+		// Turn on the logrus logger
+		// and sink the output to util logger.
+		logrus.SetLevel(logrus.TraceLevel)
+		logrus.SetFormatter(log.AsLogrusFormatter(l))
+
+		// Turn on klog logger according to the verbosity,
+		// and sink the output to util logger.
+		{
+			var flags flag.FlagSet
+
+			klog.InitFlags(&flags)
+			_ = flags.Set("v", strconv.FormatUint(log.GetVerbosity(), 10))
+			_ = flags.Set("skip_headers", "true")
+		}
+		klog.SetLogger(log.AsLogr(l))
+
+		if pb != nil {
+			return pb(c)
+		}
+
+		// Init set GOMAXPROCS.
+		runtimex.Init()
+
+		return nil
+	}
+
 	r.Logger.Before(cmd)
-	// Compatible with other loggers.
-	logger := log.GetLogger()
-	stdlog.SetOutput(logger)
-	logrus.SetOutput(logger)
-	klog.SetOutput(logger)
-	klogv2.SetLogger(log.AsLogr(logger))
 }
 
 func (r *Server) Action(cmd *cli.Command) {
@@ -515,12 +620,13 @@ func (r *Server) Run(c context.Context) error {
 	modelClient := getModelClient(databaseDrvDialect, databaseDrv)
 
 	initOpts := initOptions{
-		K8sConfig:      k8sCfg,
-		K8sCacheReady:  make(chan struct{}),
-		ModelClient:    modelClient,
-		SkipTLSVerify:  len(r.TlsAutoCertDomains) != 0,
-		DatabaseDriver: databaseDrv,
-		CacheDriver:    cacheDrv,
+		K8sConfig:              k8sCfg,
+		K8sCtrlMgrIsReady:      &atomic.Bool{},
+		ModelClient:            modelClient,
+		SkipTLSVerify:          len(r.TlsAutoCertDomains) != 0,
+		DatabaseDriver:         databaseDrv,
+		CacheDriver:            cacheDrv,
+		BuiltinCatalogProvider: r.BuiltinCatalogProvider,
 	}
 	if err = r.init(ctx, initOpts); err != nil {
 		log.Errorf("error initializing: %v", err)
@@ -546,10 +652,9 @@ func (r *Server) Run(c context.Context) error {
 
 	// Start k8s controllers.
 	startK8sCtrlsOpts := startK8sCtrlsOptions{
-		K8sConfig:      k8sCfg,
-		K8sCacheReady:  initOpts.K8sCacheReady,
-		ModelClient:    modelClient,
-		LeaderElection: r.KubeLeaderElection,
+		MgrIsReady:  initOpts.K8sCtrlMgrIsReady,
+		RestConfig:  k8sCfg,
+		ModelClient: modelClient,
 	}
 
 	g.Go(func() error {
@@ -581,17 +686,17 @@ func (r *Server) Run(c context.Context) error {
 	})
 
 	// Start cron spec syncer.
-	startCronSpecSyncerOpts := cron.StartSyncerOptions{
+	startCronSpecSyncerOpts := cron.StartCorrecterOptions{
 		ModelClient: modelClient,
 		Interval:    5 * time.Minute,
 	}
 
 	g.Go(func() error {
-		log.Info("starting cron spec syncer")
+		log.Info("starting cron expression correcter")
 
-		err := cron.SetupSyncer(ctx, startCronSpecSyncerOpts)
+		err := cron.StartCorrecter(ctx, startCronSpecSyncerOpts)
 		if err != nil {
-			log.Errorf("error starting cron spec syncer: %v", err)
+			log.Errorf("error starting cron expression correcter: %v", err)
 		}
 
 		return err
@@ -627,6 +732,49 @@ func (r *Server) configure(_ context.Context) error {
 		}
 
 		crypto.EncryptorConfig.Set(enc)
+	}
+
+	// Configure IPv4 addresses and subnet CIDR.
+	{
+		var (
+			host, _        = utilnet.ChooseHostInterface()
+			ifaces, _      = net.Interfaces()
+			nonLoopBackIPs = sets.NewString()
+			subnet         string
+		)
+
+		for _, _if := range ifaces {
+			if _if.Flags&net.FlagUp == 0 || _if.Flags&net.FlagLoopback != 0 {
+				// Skip down or loopback interfaces.
+				continue
+			}
+
+			addrs, err := _if.Addrs()
+			if err != nil {
+				return fmt.Errorf("error querying addresses from interface %s(%d): %w",
+					_if.Name, _if.Index, err)
+			}
+
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+					// NB(thxCode): There is no NAT for IPv6,
+					// so we only need to consider IPv4.
+					v4 := ipnet.IP.To4()
+					if v4 == nil || nonLoopBackIPs.Has(v4.String()) {
+						continue
+					}
+
+					nonLoopBackIPs.Insert(v4.String())
+
+					if host != nil && host.Equal(v4) {
+						subnet = ipnet.String()
+					}
+				}
+			}
+		}
+
+		servervars.NonLoopBackIPs.Set(nonLoopBackIPs)
+		servervars.Subnet.Set(subnet)
 	}
 
 	return nil

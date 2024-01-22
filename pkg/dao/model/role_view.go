@@ -9,11 +9,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/role"
 	"github.com/seal-io/walrus/pkg/dao/types"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // RoleCreateInput holds the creation input of the Role entity,
@@ -22,11 +24,13 @@ type RoleCreateInput struct {
 	inputConfig `path:"-" query:"-" json:"-"`
 
 	// The kind of the role.
-	Kind string `path:"-" query:"-" json:"kind,omitempty"`
+	Kind string `path:"-" query:"-" json:"kind,cli-table-column,omitempty"`
 	// The detail of the role.
 	Description string `path:"-" query:"-" json:"description,omitempty"`
 	// The policy list of the role.
 	Policies types.RolePolicies `path:"-" query:"-" json:"policies,omitempty"`
+	// The environment type list of the role to apply, only for system kind role.
+	ApplicableEnvironmentTypes []string `path:"-" query:"-" json:"applicableEnvironmentTypes,omitempty"`
 }
 
 // Model returns the Role entity for creating,
@@ -37,9 +41,10 @@ func (rci *RoleCreateInput) Model() *Role {
 	}
 
 	_r := &Role{
-		Kind:        rci.Kind,
-		Description: rci.Description,
-		Policies:    rci.Policies,
+		Kind:                       rci.Kind,
+		Description:                rci.Description,
+		Policies:                   rci.Policies,
+		ApplicableEnvironmentTypes: rci.ApplicableEnvironmentTypes,
 	}
 
 	return _r
@@ -70,11 +75,13 @@ func (rci *RoleCreateInput) ValidateWith(ctx context.Context, cs ClientSet, cach
 // RoleCreateInputs holds the creation input item of the Role entities.
 type RoleCreateInputsItem struct {
 	// The kind of the role.
-	Kind string `path:"-" query:"-" json:"kind,omitempty"`
+	Kind string `path:"-" query:"-" json:"kind,cli-table-column,omitempty"`
 	// The detail of the role.
 	Description string `path:"-" query:"-" json:"description,omitempty"`
 	// The policy list of the role.
 	Policies types.RolePolicies `path:"-" query:"-" json:"policies,omitempty"`
+	// The environment type list of the role to apply, only for system kind role.
+	ApplicableEnvironmentTypes []string `path:"-" query:"-" json:"applicableEnvironmentTypes,omitempty"`
 }
 
 // ValidateWith checks the RoleCreateInputsItem entity with the given context and client set.
@@ -110,9 +117,10 @@ func (rci *RoleCreateInputs) Model() []*Role {
 
 	for i := range rci.Items {
 		_r := &Role{
-			Kind:        rci.Items[i].Kind,
-			Description: rci.Items[i].Description,
-			Policies:    rci.Items[i].Policies,
+			Kind:                       rci.Items[i].Kind,
+			Description:                rci.Items[i].Description,
+			Policies:                   rci.Items[i].Policies,
+			ApplicableEnvironmentTypes: rci.Items[i].ApplicableEnvironmentTypes,
 		}
 
 		_rs[i] = _r
@@ -264,6 +272,150 @@ func (rdi *RoleDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, cac
 	return nil
 }
 
+// RolePatchInput holds the patch input of the Role entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type RolePatchInput struct {
+	RoleQueryInput `path:",inline" query:"-" json:"-"`
+
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+	// The kind of the role.
+	Kind string `path:"-" query:"-" json:"kind,omitempty"`
+	// The detail of the role.
+	Description string `path:"-" query:"-" json:"description,omitempty"`
+	// The policy list of the role.
+	Policies types.RolePolicies `path:"-" query:"-" json:"policies,omitempty"`
+	// The environment type list of the role to apply, only for system kind role.
+	ApplicableEnvironmentTypes []string `path:"-" query:"-" json:"applicableEnvironmentTypes,omitempty"`
+	// Indicate whether the role is session level, decide when creating.
+	Session bool `path:"-" query:"-" json:"session,omitempty"`
+	// Indicate whether the role is builtin, decide when creating.
+	Builtin bool `path:"-" query:"-" json:"builtin,omitempty"`
+
+	patchedEntity *Role `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Role partition entity for patching.
+func (rpi *RolePatchInput) PatchModel() *Role {
+	if rpi == nil {
+		return nil
+	}
+
+	_r := &Role{
+		CreateTime:                 rpi.CreateTime,
+		UpdateTime:                 rpi.UpdateTime,
+		Kind:                       rpi.Kind,
+		Description:                rpi.Description,
+		Policies:                   rpi.Policies,
+		ApplicableEnvironmentTypes: rpi.ApplicableEnvironmentTypes,
+		Session:                    rpi.Session,
+		Builtin:                    rpi.Builtin,
+	}
+
+	return _r
+}
+
+// Model returns the Role patched entity,
+// after validating.
+func (rpi *RolePatchInput) Model() *Role {
+	if rpi == nil {
+		return nil
+	}
+
+	return rpi.patchedEntity
+}
+
+// Validate checks the RolePatchInput entity.
+func (rpi *RolePatchInput) Validate() error {
+	if rpi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return rpi.ValidateWith(rpi.inputConfig.Context, rpi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the RolePatchInput entity with the given context and client set.
+func (rpi *RolePatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := rpi.RoleQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Roles().Query()
+
+	if rpi.Refer != nil {
+		if rpi.Refer.IsString() {
+			q.Where(
+				role.ID(rpi.Refer.String()))
+		} else {
+			return errors.New("invalid identify refer of role")
+		}
+	} else if rpi.ID != "" {
+		q.Where(
+			role.ID(rpi.ID))
+	} else {
+		return errors.New("invalid identify of role")
+	}
+
+	q.Select(
+		role.WithoutFields(
+			role.FieldCreateTime,
+			role.FieldUpdateTime,
+			role.FieldSession,
+			role.FieldBuiltin,
+		)...,
+	)
+
+	var e *Role
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Role)
+		}
+	}
+
+	_pm := rpi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Role)
+
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+	if e.Kind != _obj.Kind {
+		return errors.New("field kind is immutable")
+	}
+	if e.Session != _obj.Session {
+		return errors.New("field session is immutable")
+	}
+	if e.Builtin != _obj.Builtin {
+		return errors.New("field builtin is immutable")
+	}
+
+	rpi.patchedEntity = _obj
+	return nil
+}
+
 // RoleQueryInput holds the query input of the Role entity,
 // please tags with `path:",inline"` if embedding.
 type RoleQueryInput struct {
@@ -390,6 +542,8 @@ type RoleUpdateInput struct {
 	Description string `path:"-" query:"-" json:"description,omitempty"`
 	// The policy list of the role.
 	Policies types.RolePolicies `path:"-" query:"-" json:"policies,omitempty"`
+	// The environment type list of the role to apply, only for system kind role.
+	ApplicableEnvironmentTypes []string `path:"-" query:"-" json:"applicableEnvironmentTypes,omitempty"`
 }
 
 // Model returns the Role entity for modifying,
@@ -400,9 +554,10 @@ func (rui *RoleUpdateInput) Model() *Role {
 	}
 
 	_r := &Role{
-		ID:          rui.ID,
-		Description: rui.Description,
-		Policies:    rui.Policies,
+		ID:                         rui.ID,
+		Description:                rui.Description,
+		Policies:                   rui.Policies,
+		ApplicableEnvironmentTypes: rui.ApplicableEnvironmentTypes,
 	}
 
 	return _r
@@ -439,6 +594,8 @@ type RoleUpdateInputsItem struct {
 	Description string `path:"-" query:"-" json:"description,omitempty"`
 	// The policy list of the role.
 	Policies types.RolePolicies `path:"-" query:"-" json:"policies"`
+	// The environment type list of the role to apply, only for system kind role.
+	ApplicableEnvironmentTypes []string `path:"-" query:"-" json:"applicableEnvironmentTypes,omitempty"`
 }
 
 // ValidateWith checks the RoleUpdateInputsItem entity with the given context and client set.
@@ -474,9 +631,10 @@ func (rui *RoleUpdateInputs) Model() []*Role {
 
 	for i := range rui.Items {
 		_r := &Role{
-			ID:          rui.Items[i].ID,
-			Description: rui.Items[i].Description,
-			Policies:    rui.Items[i].Policies,
+			ID:                         rui.Items[i].ID,
+			Description:                rui.Items[i].Description,
+			Policies:                   rui.Items[i].Policies,
+			ApplicableEnvironmentTypes: rui.Items[i].ApplicableEnvironmentTypes,
 		}
 
 		_rs[i] = _r
@@ -553,10 +711,6 @@ func (rui *RoleUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, cac
 	}
 
 	for i := range rui.Items {
-		if rui.Items[i] == nil {
-			continue
-		}
-
 		if err := rui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}
@@ -567,13 +721,14 @@ func (rui *RoleUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, cac
 
 // RoleOutput holds the output of the Role entity.
 type RoleOutput struct {
-	ID          string             `json:"id,omitempty"`
-	CreateTime  *time.Time         `json:"createTime,omitempty"`
-	UpdateTime  *time.Time         `json:"updateTime,omitempty"`
-	Kind        string             `json:"kind,omitempty"`
-	Description string             `json:"description,omitempty"`
-	Policies    types.RolePolicies `json:"policies,omitempty"`
-	Builtin     bool               `json:"builtin,omitempty"`
+	ID                         string             `json:"id,omitempty"`
+	CreateTime                 *time.Time         `json:"createTime,omitempty"`
+	UpdateTime                 *time.Time         `json:"updateTime,omitempty"`
+	Kind                       string             `json:"kind,cli-table-column,omitempty"`
+	Description                string             `json:"description,omitempty"`
+	Policies                   types.RolePolicies `json:"policies,omitempty"`
+	ApplicableEnvironmentTypes []string           `json:"applicableEnvironmentTypes,omitempty"`
+	Builtin                    bool               `json:"builtin,cli-table-column,omitempty"`
 }
 
 // View returns the output of Role entity.
@@ -593,13 +748,14 @@ func ExposeRole(_r *Role) *RoleOutput {
 	}
 
 	ro := &RoleOutput{
-		ID:          _r.ID,
-		CreateTime:  _r.CreateTime,
-		UpdateTime:  _r.UpdateTime,
-		Kind:        _r.Kind,
-		Description: _r.Description,
-		Policies:    _r.Policies,
-		Builtin:     _r.Builtin,
+		ID:                         _r.ID,
+		CreateTime:                 _r.CreateTime,
+		UpdateTime:                 _r.UpdateTime,
+		Kind:                       _r.Kind,
+		Description:                _r.Description,
+		Policies:                   _r.Policies,
+		ApplicableEnvironmentTypes: _r.ApplicableEnvironmentTypes,
+		Builtin:                    _r.Builtin,
 	}
 
 	return ro

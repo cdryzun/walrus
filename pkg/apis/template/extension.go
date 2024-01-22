@@ -2,6 +2,7 @@ package template
 
 import (
 	modbus "github.com/seal-io/walrus/pkg/bus/template"
+	"github.com/seal-io/walrus/pkg/dao"
 	"github.com/seal-io/walrus/pkg/dao/model"
 	"github.com/seal-io/walrus/pkg/dao/model/template"
 	"github.com/seal-io/walrus/pkg/dao/model/templateversion"
@@ -32,10 +33,7 @@ var (
 	queryVersionFields = []string{
 		templateversion.FieldVersion,
 	}
-	getVersionFields  = templateversion.WithoutFields()
-	sortVersionFields = []string{
-		templateversion.FieldVersion,
-	}
+	getVersionFields = templateversion.WithoutFields()
 )
 
 func (h Handler) RouteGetVersions(
@@ -63,9 +61,7 @@ func (h Handler) RouteGetVersions(
 		query.Select(fields...)
 	}
 
-	if orders, ok := req.Sorting(sortVersionFields, model.Desc(templateversion.FieldCreateTime)); ok {
-		query.Order(orders...)
-	}
+	query.Order(model.Desc(templateversion.FieldCreateTime), dao.OrderSemverVersionFunc)
 
 	entities, err := query.
 		// Must extract template.
@@ -81,5 +77,6 @@ func (h Handler) RouteGetVersions(
 		return nil, 0, err
 	}
 
-	return model.ExposeTemplateVersions(entities), cnt, nil
+	// Set expose schema.
+	return dao.ExposeTemplateVersions(entities), cnt, nil
 }

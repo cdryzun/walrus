@@ -9,10 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/environmentconnectorrelationship"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // EnvironmentConnectorRelationshipCreateInput holds the creation input of the EnvironmentConnectorRelationship entity,
@@ -272,6 +274,133 @@ func (ecrdi *EnvironmentConnectorRelationshipDeleteInputs) ValidateWith(ctx cont
 		return errors.New("found unrecognized item")
 	}
 
+	return nil
+}
+
+// EnvironmentConnectorRelationshipPatchInput holds the patch input of the EnvironmentConnectorRelationship entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type EnvironmentConnectorRelationshipPatchInput struct {
+	EnvironmentConnectorRelationshipQueryInput `path:",inline" query:"-" json:"-"`
+
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+
+	// Connector indicates replacing the stale Connector entity.
+	Connector *ConnectorQueryInput `uri:"-" query:"-" json:"connector"`
+
+	patchedEntity *EnvironmentConnectorRelationship `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the EnvironmentConnectorRelationship partition entity for patching.
+func (ecrpi *EnvironmentConnectorRelationshipPatchInput) PatchModel() *EnvironmentConnectorRelationship {
+	if ecrpi == nil {
+		return nil
+	}
+
+	_ecr := &EnvironmentConnectorRelationship{
+		CreateTime: ecrpi.CreateTime,
+	}
+
+	if ecrpi.Connector != nil {
+		_ecr.ConnectorID = ecrpi.Connector.ID
+	}
+	return _ecr
+}
+
+// Model returns the EnvironmentConnectorRelationship patched entity,
+// after validating.
+func (ecrpi *EnvironmentConnectorRelationshipPatchInput) Model() *EnvironmentConnectorRelationship {
+	if ecrpi == nil {
+		return nil
+	}
+
+	return ecrpi.patchedEntity
+}
+
+// Validate checks the EnvironmentConnectorRelationshipPatchInput entity.
+func (ecrpi *EnvironmentConnectorRelationshipPatchInput) Validate() error {
+	if ecrpi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return ecrpi.ValidateWith(ecrpi.inputConfig.Context, ecrpi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the EnvironmentConnectorRelationshipPatchInput entity with the given context and client set.
+func (ecrpi *EnvironmentConnectorRelationshipPatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := ecrpi.EnvironmentConnectorRelationshipQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.EnvironmentConnectorRelationships().Query()
+
+	if ecrpi.Connector != nil {
+		if err := ecrpi.Connector.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				ecrpi.Connector = nil
+			}
+		}
+	}
+
+	if ecrpi.Refer != nil {
+		if ecrpi.Refer.IsID() {
+			q.Where(
+				environmentconnectorrelationship.ID(ecrpi.Refer.ID()))
+		} else {
+			return errors.New("invalid identify refer of environmentconnectorrelationship")
+		}
+	} else if ecrpi.ID != "" {
+		q.Where(
+			environmentconnectorrelationship.ID(ecrpi.ID))
+	} else {
+		return errors.New("invalid identify of environmentconnectorrelationship")
+	}
+
+	q.Select(
+		environmentconnectorrelationship.WithoutFields(
+			environmentconnectorrelationship.FieldCreateTime,
+		)...,
+	)
+
+	var e *EnvironmentConnectorRelationship
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*EnvironmentConnectorRelationship)
+		}
+	}
+
+	_pm := ecrpi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*EnvironmentConnectorRelationship)
+
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+
+	ecrpi.patchedEntity = _obj
 	return nil
 }
 
@@ -583,10 +712,6 @@ func (ecrui *EnvironmentConnectorRelationshipUpdateInputs) ValidateWith(ctx cont
 	}
 
 	for i := range ecrui.Items {
-		if ecrui.Items[i] == nil {
-			continue
-		}
-
 		if err := ecrui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}

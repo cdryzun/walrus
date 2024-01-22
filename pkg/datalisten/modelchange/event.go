@@ -10,19 +10,26 @@ import (
 
 // Available topics,
 // which is used for model change subscription.
+// Do not support relationship tables.
 var (
 	// Catalog is the topic for model.Catalog.
 	Catalog = topic.Topic(migrate.CatalogsTable.Name)
 	// Connector is the topic for model.Connector.
 	Connector = topic.Topic(migrate.ConnectorsTable.Name)
-	// Service is the topic for model.Service.
-	Service = topic.Topic(migrate.ServicesTable.Name)
-	// ServiceResource is the topic for model.ServiceResource.
-	ServiceResource = topic.Topic(migrate.ServiceResourcesTable.Name)
-	// ServiceRevision is the topic for model.ServiceRevision.
-	ServiceRevision = topic.Topic(migrate.ServiceRevisionsTable.Name)
+	// Resource is the topic for model.Resource.
+	Resource = topic.Topic(migrate.ResourcesTable.Name)
+	// ResourceComponent is the topic for model.ResourceComponent.
+	ResourceComponent = topic.Topic(migrate.ResourceComponentsTable.Name)
+	// ResourceRevision is the topic for model.ResourceRevision.
+	ResourceRevision = topic.Topic(migrate.ResourceRevisionsTable.Name)
 	// Template is the topic for model.Template.
 	Template = topic.Topic(migrate.TemplatesTable.Name)
+	// Workflow is the topic for model.Workflow.
+	Workflow = topic.Topic(migrate.WorkflowsTable.Name)
+	// WorkflowExecution is the topic for model.WorkflowExecution.
+	WorkflowExecution = topic.Topic(migrate.WorkflowExecutionsTable.Name)
+	// ResourceDefinition is the topic for model.ResourceDefinition.
+	ResourceDefinition = topic.Topic(migrate.ResourceDefinitionsTable.Name)
 )
 
 // tableNameSet holds the set for interested table names,
@@ -31,10 +38,13 @@ var tableNameSet = sets.NewString(
 	// Allow subscribing from topic.
 	string(Catalog),
 	string(Connector),
-	string(Service),
-	string(ServiceResource),
-	string(ServiceRevision),
+	string(Resource),
+	string(ResourceComponent),
+	string(ResourceRevision),
 	string(Template),
+	string(Workflow),
+	string(WorkflowExecution),
+	string(ResourceDefinition),
 	// Disallow subscribing from topic.
 	migrate.SettingsTable.Name,
 )
@@ -63,9 +73,43 @@ func (t EventType) String() string {
 	return "unknown"
 }
 
+type EventData struct {
+	ID            object.ID
+	Name          string
+	ProjectID     object.ID
+	EnvironmentID object.ID
+}
+
 // Event indicates the event of model change,
 // includes Type and changed IDs.
 type Event struct {
 	Type EventType
-	IDs  []object.ID
+	Data []EventData
+}
+
+func (e Event) IDs() []object.ID {
+	ids := make([]object.ID, len(e.Data))
+	for i := range e.Data {
+		ids[i] = e.Data[i].ID
+	}
+
+	return ids
+}
+
+func (e Event) ProjectIDs() []object.ID {
+	ids := make([]object.ID, len(e.Data))
+	for i := range e.Data {
+		ids[i] = e.Data[i].ProjectID
+	}
+
+	return ids
+}
+
+func (e Event) EnvironmentIDs() []object.ID {
+	ids := make([]object.ID, len(e.Data))
+	for i := range e.Data {
+		ids[i] = e.Data[i].EnvironmentID
+	}
+
+	return ids
 }

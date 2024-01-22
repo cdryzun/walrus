@@ -80,3 +80,13 @@ func Previous() string {
 func IsValid() bool {
 	return semver.IsValid(Version)
 }
+
+func IsDevVersion() bool {
+	return IsDevVersionWith(Version)
+}
+
+func IsDevVersionWith(v string) bool {
+	return v == "" ||
+		v == "dev" ||
+		v == "main"
+}

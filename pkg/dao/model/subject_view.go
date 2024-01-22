@@ -9,11 +9,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
 	"github.com/seal-io/walrus/pkg/dao/model/subject"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // SubjectCreateInput holds the creation input of the Subject entity,
@@ -24,7 +26,7 @@ type SubjectCreateInput struct {
 	// The name of the subject.
 	Name string `path:"-" query:"-" json:"name"`
 	// The kind of the subject.
-	Kind string `path:"-" query:"-" json:"kind,omitempty"`
+	Kind string `path:"-" query:"-" json:"kind,cli-table-column,omitempty"`
 	// The domain of the subject.
 	Domain string `path:"-" query:"-" json:"domain,omitempty"`
 	// The detail of the subject.
@@ -106,7 +108,7 @@ type SubjectCreateInputsItem struct {
 	// The name of the subject.
 	Name string `path:"-" query:"-" json:"name"`
 	// The kind of the subject.
-	Kind string `path:"-" query:"-" json:"kind,omitempty"`
+	Kind string `path:"-" query:"-" json:"kind,cli-table-column,omitempty"`
 	// The domain of the subject.
 	Domain string `path:"-" query:"-" json:"domain,omitempty"`
 	// The detail of the subject.
@@ -310,6 +312,7 @@ func (sdi *SubjectDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	ids := make([]object.ID, 0, len(sdi.Items))
 	ors := make([]predicate.Subject, 0, len(sdi.Items))
+	indexers := make(map[any][]int)
 
 	for i := range sdi.Items {
 		if sdi.Items[i] == nil {
@@ -319,9 +322,14 @@ func (sdi *SubjectDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 		if sdi.Items[i].ID != "" {
 			ids = append(ids, sdi.Items[i].ID)
 			ors = append(ors, subject.ID(sdi.Items[i].ID))
+			indexers[sdi.Items[i].ID] = append(indexers[sdi.Items[i].ID], i)
 		} else if (sdi.Items[i].Kind != "") && (sdi.Items[i].Domain != "") && (sdi.Items[i].Name != "") {
 			ors = append(ors, subject.And(
-				subject.Kind(sdi.Items[i].Kind), subject.Domain(sdi.Items[i].Domain), subject.Name(sdi.Items[i].Name)))
+				subject.Kind(sdi.Items[i].Kind),
+				subject.Domain(sdi.Items[i].Domain),
+				subject.Name(sdi.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", sdi.Items[i].Kind, "/", sdi.Items[i].Domain, "/", sdi.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -350,12 +358,199 @@ func (sdi *SubjectDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 	}
 
 	for i := range es {
-		sdi.Items[i].ID = es[i].ID
-		sdi.Items[i].Kind = es[i].Kind
-		sdi.Items[i].Domain = es[i].Domain
-		sdi.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Kind, "/", es[i].Domain, "/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			sdi.Items[j].ID = es[i].ID
+			sdi.Items[j].Kind = es[i].Kind
+			sdi.Items[j].Domain = es[i].Domain
+			sdi.Items[j].Name = es[i].Name
+		}
 	}
 
+	return nil
+}
+
+// SubjectPatchInput holds the patch input of the Subject entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type SubjectPatchInput struct {
+	SubjectQueryInput `path:",inline" query:"-" json:"-"`
+
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+	// The kind of the subject.
+	Kind string `path:"-" query:"-" json:"kind,omitempty"`
+	// The domain of the subject.
+	Domain string `path:"-" query:"-" json:"domain,omitempty"`
+	// The name of the subject.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// The detail of the subject.
+	Description string `path:"-" query:"-" json:"description,omitempty"`
+	// Indicate whether the subject is builtin, decide when creating.
+	Builtin bool `path:"-" query:"-" json:"builtin,omitempty"`
+
+	// Roles indicates replacing the stale SubjectRoleRelationship entities.
+	Roles []*SubjectRoleRelationshipCreateInput `uri:"-" query:"-" json:"roles,omitempty"`
+
+	patchedEntity *Subject `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Subject partition entity for patching.
+func (spi *SubjectPatchInput) PatchModel() *Subject {
+	if spi == nil {
+		return nil
+	}
+
+	_s := &Subject{
+		CreateTime:  spi.CreateTime,
+		UpdateTime:  spi.UpdateTime,
+		Kind:        spi.Kind,
+		Domain:      spi.Domain,
+		Name:        spi.Name,
+		Description: spi.Description,
+		Builtin:     spi.Builtin,
+	}
+
+	if spi.Roles != nil {
+		// Empty slice is used for clearing the edge.
+		_s.Edges.Roles = make([]*SubjectRoleRelationship, 0, len(spi.Roles))
+	}
+	for j := range spi.Roles {
+		if spi.Roles[j] == nil {
+			continue
+		}
+		_s.Edges.Roles = append(_s.Edges.Roles,
+			spi.Roles[j].Model())
+	}
+	return _s
+}
+
+// Model returns the Subject patched entity,
+// after validating.
+func (spi *SubjectPatchInput) Model() *Subject {
+	if spi == nil {
+		return nil
+	}
+
+	return spi.patchedEntity
+}
+
+// Validate checks the SubjectPatchInput entity.
+func (spi *SubjectPatchInput) Validate() error {
+	if spi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return spi.ValidateWith(spi.inputConfig.Context, spi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the SubjectPatchInput entity with the given context and client set.
+func (spi *SubjectPatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := spi.SubjectQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Subjects().Query()
+
+	for i := range spi.Roles {
+		if spi.Roles[i] == nil {
+			continue
+		}
+
+		if err := spi.Roles[i].ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				spi.Roles[i] = nil
+			}
+		}
+	}
+
+	if spi.Refer != nil {
+		if spi.Refer.IsID() {
+			q.Where(
+				subject.ID(spi.Refer.ID()))
+		} else if refers := spi.Refer.Split(3); len(refers) == 3 {
+			q.Where(
+				subject.Kind(refers[0].String()),
+				subject.Domain(refers[1].String()),
+				subject.Name(refers[2].String()))
+		} else {
+			return errors.New("invalid identify refer of subject")
+		}
+	} else if spi.ID != "" {
+		q.Where(
+			subject.ID(spi.ID))
+	} else if (spi.Kind != "") && (spi.Domain != "") && (spi.Name != "") {
+		q.Where(
+			subject.Kind(spi.Kind),
+			subject.Domain(spi.Domain),
+			subject.Name(spi.Name))
+	} else {
+		return errors.New("invalid identify of subject")
+	}
+
+	q.Select(
+		subject.WithoutFields(
+			subject.FieldCreateTime,
+			subject.FieldUpdateTime,
+		)...,
+	)
+
+	var e *Subject
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Subject)
+		}
+	}
+
+	_pm := spi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Subject)
+
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+	if e.Kind != _obj.Kind {
+		return errors.New("field kind is immutable")
+	}
+	if e.Domain != _obj.Domain {
+		return errors.New("field domain is immutable")
+	}
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+	if e.Builtin != _obj.Builtin {
+		return errors.New("field builtin is immutable")
+	}
+
+	spi.patchedEntity = _obj
 	return nil
 }
 
@@ -433,7 +628,9 @@ func (sqi *SubjectQueryInput) ValidateWith(ctx context.Context, cs ClientSet, ca
 			subject.ID(sqi.ID))
 	} else if (sqi.Kind != "") && (sqi.Domain != "") && (sqi.Name != "") {
 		q.Where(
-			subject.Kind(sqi.Kind), subject.Domain(sqi.Domain), subject.Name(sqi.Name))
+			subject.Kind(sqi.Kind),
+			subject.Domain(sqi.Domain),
+			subject.Name(sqi.Name))
 	} else {
 		return errors.New("invalid identify of subject")
 	}
@@ -713,6 +910,7 @@ func (sui *SubjectUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	ids := make([]object.ID, 0, len(sui.Items))
 	ors := make([]predicate.Subject, 0, len(sui.Items))
+	indexers := make(map[any][]int)
 
 	for i := range sui.Items {
 		if sui.Items[i] == nil {
@@ -722,9 +920,14 @@ func (sui *SubjectUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 		if sui.Items[i].ID != "" {
 			ids = append(ids, sui.Items[i].ID)
 			ors = append(ors, subject.ID(sui.Items[i].ID))
+			indexers[sui.Items[i].ID] = append(indexers[sui.Items[i].ID], i)
 		} else if (sui.Items[i].Kind != "") && (sui.Items[i].Domain != "") && (sui.Items[i].Name != "") {
 			ors = append(ors, subject.And(
-				subject.Kind(sui.Items[i].Kind), subject.Domain(sui.Items[i].Domain), subject.Name(sui.Items[i].Name)))
+				subject.Kind(sui.Items[i].Kind),
+				subject.Domain(sui.Items[i].Domain),
+				subject.Name(sui.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", sui.Items[i].Kind, "/", sui.Items[i].Domain, "/", sui.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -753,17 +956,20 @@ func (sui *SubjectUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 	}
 
 	for i := range es {
-		sui.Items[i].ID = es[i].ID
-		sui.Items[i].Kind = es[i].Kind
-		sui.Items[i].Domain = es[i].Domain
-		sui.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Kind, "/", es[i].Domain, "/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			sui.Items[j].ID = es[i].ID
+			sui.Items[j].Kind = es[i].Kind
+			sui.Items[j].Domain = es[i].Domain
+			sui.Items[j].Name = es[i].Name
+		}
 	}
 
 	for i := range sui.Items {
-		if sui.Items[i] == nil {
-			continue
-		}
-
 		if err := sui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}
@@ -777,7 +983,7 @@ type SubjectOutput struct {
 	ID          object.ID  `json:"id,omitempty"`
 	CreateTime  *time.Time `json:"createTime,omitempty"`
 	UpdateTime  *time.Time `json:"updateTime,omitempty"`
-	Kind        string     `json:"kind,omitempty"`
+	Kind        string     `json:"kind,cli-table-column,omitempty"`
 	Domain      string     `json:"domain,omitempty"`
 	Name        string     `json:"name,omitempty"`
 	Description string     `json:"description,omitempty"`

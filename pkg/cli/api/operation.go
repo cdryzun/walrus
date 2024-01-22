@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"text/template"
 
@@ -18,7 +17,6 @@ import (
 	"github.com/seal-io/walrus/pkg/cli/config"
 	"github.com/seal-io/walrus/pkg/cli/formatter"
 	"github.com/seal-io/walrus/utils/json"
-	"github.com/seal-io/walrus/utils/log"
 )
 
 // Operation represents an API action, e.g. list-things or create-user.
@@ -38,6 +36,10 @@ type Operation struct {
 	Hidden        bool        `json:"hidden,omitempty"`
 	Deprecated    string      `json:"deprecated,omitempty"`
 	Formats       []string    `json:"formats,omitempty"`
+	TableColumns  []string    `json:"tableColumns,omitempty"`
+
+	// CmdIgnore is used to ignore the operation when generating CLI commands.
+	CmdIgnore bool `json:"cmdIgnore,omitempty"`
 }
 
 // Command returns a Cobra command instance for this operation.
@@ -77,24 +79,19 @@ func (o Operation) Command(sc *config.Config) *cobra.Command {
 		Args:       argSpec,
 		Hidden:     o.Hidden,
 		Deprecated: o.Deprecated,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			var err error
+		PreRun: func(cmd *cobra.Command, args []string) {
+			shouldUpdate, err := CompareVersion(sc)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 
-			debug := cmd.Flags().Lookup("debug")
-			if debug != nil {
-				sc.Debug, err = strconv.ParseBool(debug.Value.String())
+			if shouldUpdate {
+				err = InitOpenAPI(sc, true)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
 				}
-			}
-			log.SetLevel(log.InfoLevel)
-			if sc.Debug {
-				log.SetLevel(log.DebugLevel)
-			}
-
-			format := cmd.Flags().Lookup("output")
-			if format != nil {
-				sc.Format = format.Value.String()
 			}
 
 			err = sc.Inject(cmd)
@@ -116,7 +113,17 @@ func (o Operation) Command(sc *config.Config) *cobra.Command {
 				os.Exit(1)
 			}
 
-			b, err := formatter.Format(o.format(sc), resp)
+			format, ok := flags["output"].(*string)
+			if !ok {
+				fmt.Fprintln(os.Stderr, fmt.Errorf("invalid output format"))
+				os.Exit(1)
+			}
+
+			b, err := formatter.Format(resp, formatter.Options{
+				Format:  o.format(*format),
+				Columns: o.TableColumns,
+				Group:   o.Group,
+			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
@@ -158,6 +165,8 @@ func (o Operation) Command(sc *config.Config) *cobra.Command {
 			body = bps
 		}
 	}
+
+	flags["output"] = sub.Flags().StringP("output", "o", "table", "Output format [table, json, yaml]")
 
 	return sub
 }
@@ -252,7 +261,7 @@ func (o Operation) Request(
 
 	for _, param := range o.HeaderParams {
 		// Ignore flags not passed from the user.
-		if !cmd.Flags().Changed(param.OptionName()) {
+		if cmd != nil && !cmd.Flags().Changed(param.OptionName()) {
 			continue
 		}
 
@@ -282,14 +291,14 @@ func (o Operation) Request(
 	return req, nil
 }
 
-func (o Operation) format(sc *config.Config) string {
+func (o Operation) format(flagFormat string) string {
 	if len(o.Formats) != 0 {
-		if slices.Contains(o.Formats, sc.Format) {
-			return sc.Format
+		if slices.Contains(o.Formats, flagFormat) {
+			return flagFormat
 		}
 
 		return o.Formats[0]
 	}
 
-	return sc.Format
+	return flagFormat
 }

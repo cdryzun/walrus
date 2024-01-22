@@ -9,6 +9,7 @@ import (
 	"github.com/seal-io/walrus/pkg/dao/model/catalog"
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
 	"github.com/seal-io/walrus/pkg/dao/types"
+	"github.com/seal-io/walrus/utils/validation"
 )
 
 type (
@@ -24,13 +25,17 @@ func (r *CreateRequest) Validate() error {
 		return err
 	}
 
+	if err := validation.IsValidName(r.Name); err != nil {
+		return fmt.Errorf("invalid name: %w", err)
+	}
+
 	_, err := url.Parse(r.Source)
 	if err != nil {
 		return err
 	}
 
 	switch r.Type {
-	case types.GitDriverGithub, types.GitDriverGitlab:
+	case types.GitDriverGithub, types.GitDriverGitlab, types.GitDriverGitee:
 	default:
 		return fmt.Errorf("unsupported catalog type %q", r.Type)
 	}

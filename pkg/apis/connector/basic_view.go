@@ -29,7 +29,7 @@ func (r *CreateRequest) Validate() error {
 		return err
 	}
 
-	if err := validation.IsDNSLabel(r.Name); err != nil {
+	if err := validation.IsValidName(r.Name); err != nil {
 		return fmt.Errorf("invalid name: %w", err)
 	}
 
@@ -41,7 +41,11 @@ func (r *CreateRequest) Validate() error {
 		return errors.New("invalid config data: empty")
 	}
 
-	if err := validateConnector(r.Context, r.Model()); err != nil {
+	if !types.IsEnvironmentType(r.ApplicableEnvironmentType) {
+		return fmt.Errorf("invalid applicable environment type: %s", r.ApplicableEnvironmentType)
+	}
+
+	if err := validateConnector(r.Context, r.Client, r.Model()); err != nil {
 		return err
 	}
 
@@ -65,7 +69,7 @@ func (r *UpdateRequest) Validate() error {
 		return err
 	}
 
-	if err := validation.IsDNSLabel(r.Name); err != nil {
+	if err := validation.IsValidName(r.Name); err != nil {
 		return fmt.Errorf("invalid name: %w", err)
 	}
 
@@ -74,7 +78,7 @@ func (r *UpdateRequest) Validate() error {
 	}
 
 	if r.ConfigData != nil {
-		if err := validateConnector(r.Context, r.Model()); err != nil {
+		if err := validateConnector(r.Context, r.Client, r.Model()); err != nil {
 			return err
 		}
 	}
@@ -106,9 +110,10 @@ func (r *CollectionGetRequest) SetStream(stream runtime.RequestUnidiStream) {
 
 type CollectionDeleteRequest = model.ConnectorDeleteInputs
 
-func validateConnector(ctx context.Context, entity *model.Connector) error {
+func validateConnector(ctx context.Context, mc model.ClientSet, entity *model.Connector) error {
 	ops := optypes.CreateOptions{
-		Connector: *entity,
+		Connector:   *entity,
+		ModelClient: mc,
 	}
 
 	switch entity.Category {

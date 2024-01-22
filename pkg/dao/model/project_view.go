@@ -9,12 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
 	"github.com/seal-io/walrus/pkg/dao/model/project"
 	"github.com/seal-io/walrus/pkg/dao/schema/intercept"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // ProjectCreateInput holds the creation input of the Project entity,
@@ -238,6 +240,7 @@ func (pdi *ProjectDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	ids := make([]object.ID, 0, len(pdi.Items))
 	ors := make([]predicate.Project, 0, len(pdi.Items))
+	indexers := make(map[any][]int)
 
 	for i := range pdi.Items {
 		if pdi.Items[i] == nil {
@@ -247,9 +250,12 @@ func (pdi *ProjectDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 		if pdi.Items[i].ID != "" {
 			ids = append(ids, pdi.Items[i].ID)
 			ors = append(ors, project.ID(pdi.Items[i].ID))
+			indexers[pdi.Items[i].ID] = append(indexers[pdi.Items[i].ID], i)
 		} else if pdi.Items[i].Name != "" {
 			ors = append(ors, project.And(
 				project.Name(pdi.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", pdi.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -278,10 +284,156 @@ func (pdi *ProjectDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 	}
 
 	for i := range es {
-		pdi.Items[i].ID = es[i].ID
-		pdi.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			pdi.Items[j].ID = es[i].ID
+			pdi.Items[j].Name = es[i].Name
+		}
 	}
 
+	return nil
+}
+
+// ProjectPatchInput holds the patch input of the Project entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type ProjectPatchInput struct {
+	ProjectQueryInput `path:",inline" query:"-" json:"-"`
+
+	// Name holds the value of the "name" field.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// Description holds the value of the "description" field.
+	Description string `path:"-" query:"-" json:"description,omitempty"`
+	// Labels holds the value of the "labels" field.
+	Labels map[string]string `path:"-" query:"-" json:"labels,omitempty"`
+	// Annotations holds the value of the "annotations" field.
+	Annotations map[string]string `path:"-" query:"-" json:"annotations,omitempty"`
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+
+	patchedEntity *Project `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Project partition entity for patching.
+func (ppi *ProjectPatchInput) PatchModel() *Project {
+	if ppi == nil {
+		return nil
+	}
+
+	_p := &Project{
+		Name:        ppi.Name,
+		Description: ppi.Description,
+		Labels:      ppi.Labels,
+		Annotations: ppi.Annotations,
+		CreateTime:  ppi.CreateTime,
+		UpdateTime:  ppi.UpdateTime,
+	}
+
+	return _p
+}
+
+// Model returns the Project patched entity,
+// after validating.
+func (ppi *ProjectPatchInput) Model() *Project {
+	if ppi == nil {
+		return nil
+	}
+
+	return ppi.patchedEntity
+}
+
+// Validate checks the ProjectPatchInput entity.
+func (ppi *ProjectPatchInput) Validate() error {
+	if ppi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return ppi.ValidateWith(ppi.inputConfig.Context, ppi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the ProjectPatchInput entity with the given context and client set.
+func (ppi *ProjectPatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := ppi.ProjectQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Projects().Query()
+
+	if ppi.Refer != nil {
+		if ppi.Refer.IsID() {
+			q.Where(
+				project.ID(ppi.Refer.ID()))
+		} else if refers := ppi.Refer.Split(1); len(refers) == 1 {
+			q.Where(
+				project.Name(refers[0].String()))
+		} else {
+			return errors.New("invalid identify refer of project")
+		}
+	} else if ppi.ID != "" {
+		q.Where(
+			project.ID(ppi.ID))
+	} else if ppi.Name != "" {
+		q.Where(
+			project.Name(ppi.Name))
+	} else {
+		return errors.New("invalid identify of project")
+	}
+
+	ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+
+	q.Select(
+		project.WithoutFields(
+			project.FieldAnnotations,
+			project.FieldCreateTime,
+			project.FieldUpdateTime,
+		)...,
+	)
+
+	var e *Project
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Project)
+		}
+	}
+
+	_pm := ppi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Project)
+
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+
+	ppi.patchedEntity = _obj
 	return nil
 }
 
@@ -564,6 +716,7 @@ func (pui *ProjectUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	ids := make([]object.ID, 0, len(pui.Items))
 	ors := make([]predicate.Project, 0, len(pui.Items))
+	indexers := make(map[any][]int)
 
 	for i := range pui.Items {
 		if pui.Items[i] == nil {
@@ -573,9 +726,12 @@ func (pui *ProjectUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 		if pui.Items[i].ID != "" {
 			ids = append(ids, pui.Items[i].ID)
 			ors = append(ors, project.ID(pui.Items[i].ID))
+			indexers[pui.Items[i].ID] = append(indexers[pui.Items[i].ID], i)
 		} else if pui.Items[i].Name != "" {
 			ors = append(ors, project.And(
 				project.Name(pui.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", pui.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -604,15 +760,18 @@ func (pui *ProjectUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 	}
 
 	for i := range es {
-		pui.Items[i].ID = es[i].ID
-		pui.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			pui.Items[j].ID = es[i].ID
+			pui.Items[j].Name = es[i].Name
+		}
 	}
 
 	for i := range pui.Items {
-		if pui.Items[i] == nil {
-			continue
-		}
-
 		if err := pui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}

@@ -2,8 +2,9 @@ package config
 
 import (
 	"crypto/tls"
-	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -11,20 +12,23 @@ import (
 
 	"github.com/henvic/httpretty"
 
+	"github.com/seal-io/walrus/pkg/cli/common"
+	"github.com/seal-io/walrus/utils/json"
 	"github.com/seal-io/walrus/utils/strs"
 	"github.com/seal-io/walrus/utils/version"
 )
 
 const (
-	timeout     = 15 * time.Second
-	openAPIPath = "/openapi"
-	apiVersion  = "v1"
+	timeout         = 15 * time.Second
+	openAPIPath     = "/openapi"
+	apiVersion      = "v1"
+	versionPath     = "/debug/version"
+	accountInfoPath = "/account/info"
 )
 
 // CommonConfig indicate the common CLI command config.
 type CommonConfig struct {
-	Debug  bool   `json:"debug,omitempty" yaml:"debug,omitempty"`
-	Format string `json:"format,omitempty" yaml:"format,omitempty"`
+	Debug bool `json:"debug,omitempty" yaml:"debug,omitempty"`
 }
 
 // Config include the common config and server context config.
@@ -33,8 +37,14 @@ type Config struct {
 	ServerContext `json:",inline" yaml:",inline" mapstructure:",squash"`
 }
 
-// DoRequest send request to server.
-func (c *Config) DoRequest(req *http.Request) (*http.Response, error) {
+// Version include the version and commit.
+type Version struct {
+	Version string `json:"version" yaml:"version"`
+	Commit  string `json:"commit" yaml:"commit"`
+}
+
+// DoRequestWithTimeout send request to server with timeout.
+func (c *Config) DoRequestWithTimeout(req *http.Request, timeout time.Duration) (*http.Response, error) {
 	if req.URL.Host == "" {
 		ep, err := url.Parse(c.Server)
 		if err != nil {
@@ -45,9 +55,9 @@ func (c *Config) DoRequest(req *http.Request) (*http.Response, error) {
 		req.URL = resolved
 	}
 
-	c.setHeaders(req)
+	c.SetHeaders(req)
 
-	resp, err := c.httpClient().Do(req)
+	resp, err := c.HttpClient(timeout).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -55,31 +65,43 @@ func (c *Config) DoRequest(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// DoRequest send request to server.
+func (c *Config) DoRequest(req *http.Request) (*http.Response, error) {
+	return c.DoRequestWithTimeout(req, timeout)
+}
+
 // ValidateAndSetup validate and setup the context.
 func (c *Config) ValidateAndSetup() error {
+	msg := `cli configuration is invalid: %s. You can configure cli by running "walrus login"`
+
 	if c.Server == "" {
-		return errors.New("endpoint is required")
+		return fmt.Errorf(msg, "server address is empty")
 	}
 
 	if c.Token == "" {
-		return errors.New("token is required")
+		return fmt.Errorf(msg, "token is empty")
 	}
 
-	err := c.validateProject()
-	if err != nil {
-		return err
+	var err error
+
+	switch {
+	case c.Project != "" && c.Environment != "":
+		err = c.validateEnvironment()
+	case c.Project != "":
+		err = c.validateProject()
+	default:
+		err = c.validateToken()
 	}
 
-	err = c.validateEnvironment()
 	if err != nil {
-		return err
+		return fmt.Errorf(msg, err.Error())
 	}
 
 	return nil
 }
 
-// httpClient generate http client base on context config.
-func (c *Config) httpClient() *http.Client {
+// HttpClient generate http client base on context config.
+func (c *Config) HttpClient(timeout time.Duration) *http.Client {
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
@@ -90,6 +112,10 @@ func (c *Config) httpClient() *http.Client {
 	var tp http.RoundTripper = &http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
 		TLSClientConfig: tlsConfig,
+		DialContext: (&net.Dialer{
+			Timeout: 3 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
 	if c.Debug {
@@ -116,12 +142,28 @@ func (c *Config) logger() *httpretty.Logger {
 	}
 }
 
-// setHeaders set default headers.
-func (c *Config) setHeaders(req *http.Request) {
+// SetHeaders set default headers.
+func (c *Config) SetHeaders(req *http.Request) {
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", c.Token))
 	req.Header.Set("User-Agent", version.GetUserAgentWith("walrus-cli"))
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	req.Header.Set("Accept", "application/json")
+}
+
+func (c *Config) SetHost(req *http.Request) error {
+	if req.URL.Host != "" {
+		return nil
+	}
+
+	ep, err := url.Parse(c.Server)
+	if err != nil {
+		return err
+	}
+
+	resolved := ep.ResolveReference(req.URL)
+	req.URL = resolved
+
+	return nil
 }
 
 const (
@@ -160,20 +202,53 @@ func (c *Config) validateResourceItem(resource, name, address string) error {
 		return err
 	}
 
-	resp, err := c.DoRequest(req)
+	resp, err := c.DoRequestWithTimeout(req, timeout)
 	if err != nil {
 		return err
 	}
 
-	switch {
-	default:
-	case resp.StatusCode == http.StatusUnauthorized:
-		return fmt.Errorf("unauthorized, please check the validity of the token")
-	case resp.StatusCode == http.StatusNotFound:
-		return fmt.Errorf("%s %s not found", strs.Singularize(resource), name)
-	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return fmt.Errorf("unexpected status code %d", resp.StatusCode)
+	return common.CheckResponseStatus(resp, fmt.Sprintf("%s %s", strs.Singularize(resource), name))
+}
+
+// validateToken send get account info request to server.
+func (c *Config) validateToken() error {
+	req, err := http.NewRequest(http.MethodGet, accountInfoPath, nil)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	resp, err := c.DoRequestWithTimeout(req, timeout)
+	if err != nil {
+		return fmt.Errorf("access %s failed", c.Server)
+	}
+
+	return common.CheckResponseStatus(resp, "")
+}
+
+func (c *Config) ServerVersion() (*Version, error) {
+	req, err := http.NewRequest(http.MethodGet, versionPath, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := c.DoRequestWithTimeout(req, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("access %s failed", c.Server)
+	}
+
+	err = common.CheckResponseStatus(resp, "")
+	if err != nil {
+		return nil, err
+	}
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var v Version
+	err = json.Unmarshal(b, &v)
+
+	return &v, err
 }

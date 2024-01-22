@@ -33,13 +33,18 @@ func (Role) Fields() []ent.Field {
 		field.String("kind").
 			Comment("The kind of the role.").
 			Default(types.RoleKindSystem).
-			Immutable(),
+			Immutable().
+			StructTag(`json:"kind,omitempty,cli-table-column"`),
 		field.String("description").
 			Comment("The detail of the role.").
 			Optional(),
 		field.JSON("policies", types.RolePolicies{}).
 			Comment("The policy list of the role.").
 			Default(types.DefaultRolePolicies()),
+		field.Strings("applicable_environment_types").
+			Comment("The environment type list of the role to apply, only for system kind role.").
+			Default([]string{}).
+			Optional(),
 		field.Bool("session").
 			Comment("Indicate whether the role is session level, decide when creating.").
 			Default(false).
@@ -50,6 +55,7 @@ func (Role) Fields() []ent.Field {
 			Comment("Indicate whether the role is builtin, decide when creating.").
 			Default(false).
 			Immutable().
+			StructTag(`json:"builtin,omitempty,cli-table-column"`).
 			Annotations(
 				entx.SkipInput()),
 	}

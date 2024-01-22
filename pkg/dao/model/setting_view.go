@@ -9,12 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
 	"github.com/seal-io/walrus/pkg/dao/model/setting"
 	"github.com/seal-io/walrus/pkg/dao/types/crypto"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // SettingCreateInput holds the creation input of the Setting entity,
@@ -226,6 +228,7 @@ func (sdi *SettingDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	ids := make([]object.ID, 0, len(sdi.Items))
 	ors := make([]predicate.Setting, 0, len(sdi.Items))
+	indexers := make(map[any][]int)
 
 	for i := range sdi.Items {
 		if sdi.Items[i] == nil {
@@ -235,9 +238,12 @@ func (sdi *SettingDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 		if sdi.Items[i].ID != "" {
 			ids = append(ids, sdi.Items[i].ID)
 			ors = append(ors, setting.ID(sdi.Items[i].ID))
+			indexers[sdi.Items[i].ID] = append(indexers[sdi.Items[i].ID], i)
 		} else if sdi.Items[i].Name != "" {
 			ors = append(ors, setting.And(
 				setting.Name(sdi.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", sdi.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -264,10 +270,167 @@ func (sdi *SettingDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 	}
 
 	for i := range es {
-		sdi.Items[i].ID = es[i].ID
-		sdi.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			sdi.Items[j].ID = es[i].ID
+			sdi.Items[j].Name = es[i].Name
+		}
 	}
 
+	return nil
+}
+
+// SettingPatchInput holds the patch input of the Setting entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type SettingPatchInput struct {
+	SettingQueryInput `path:",inline" query:"-" json:"-"`
+
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+	// The name of system setting.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// The value of system setting, store in string.
+	Value crypto.String `path:"-" query:"-" json:"value,omitempty"`
+	// Indicate the system setting should be hidden or not, default is visible.
+	Hidden *bool `path:"-" query:"-" json:"hidden,omitempty"`
+	// Indicate the system setting should be edited or not, default is readonly.
+	Editable *bool `path:"-" query:"-" json:"editable,omitempty"`
+	// Indicate the system setting should be sanitized or not before exposing, default is not.
+	Sensitive *bool `path:"-" query:"-" json:"sensitive,omitempty"`
+	// Indicate the system setting should be exposed or not, default is exposed.
+	Private *bool `path:"-" query:"-" json:"private,omitempty"`
+	// Configured indicates the setting whether to be configured.
+	Configured bool `path:"-" query:"-" json:"configured,omitempty"`
+
+	patchedEntity *Setting `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Setting partition entity for patching.
+func (spi *SettingPatchInput) PatchModel() *Setting {
+	if spi == nil {
+		return nil
+	}
+
+	_s := &Setting{
+		CreateTime: spi.CreateTime,
+		UpdateTime: spi.UpdateTime,
+		Name:       spi.Name,
+		Value:      spi.Value,
+		Hidden:     spi.Hidden,
+		Editable:   spi.Editable,
+		Sensitive:  spi.Sensitive,
+		Private:    spi.Private,
+		Configured: spi.Configured,
+	}
+
+	return _s
+}
+
+// Model returns the Setting patched entity,
+// after validating.
+func (spi *SettingPatchInput) Model() *Setting {
+	if spi == nil {
+		return nil
+	}
+
+	return spi.patchedEntity
+}
+
+// Validate checks the SettingPatchInput entity.
+func (spi *SettingPatchInput) Validate() error {
+	if spi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return spi.ValidateWith(spi.inputConfig.Context, spi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the SettingPatchInput entity with the given context and client set.
+func (spi *SettingPatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := spi.SettingQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Settings().Query()
+
+	if spi.Refer != nil {
+		if spi.Refer.IsID() {
+			q.Where(
+				setting.ID(spi.Refer.ID()))
+		} else if refers := spi.Refer.Split(1); len(refers) == 1 {
+			q.Where(
+				setting.Name(refers[0].String()))
+		} else {
+			return errors.New("invalid identify refer of setting")
+		}
+	} else if spi.ID != "" {
+		q.Where(
+			setting.ID(spi.ID))
+	} else if spi.Name != "" {
+		q.Where(
+			setting.Name(spi.Name))
+	} else {
+		return errors.New("invalid identify of setting")
+	}
+
+	q.Select(
+		setting.WithoutFields(
+			setting.FieldCreateTime,
+			setting.FieldUpdateTime,
+			setting.FieldName,
+			setting.FieldHidden,
+			setting.FieldEditable,
+			setting.FieldSensitive,
+			setting.FieldPrivate,
+		)...,
+	)
+
+	var e *Setting
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Setting)
+		}
+	}
+
+	_pm := spi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Setting)
+
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+
+	spi.patchedEntity = _obj
 	return nil
 }
 
@@ -542,6 +705,7 @@ func (sui *SettingUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 
 	ids := make([]object.ID, 0, len(sui.Items))
 	ors := make([]predicate.Setting, 0, len(sui.Items))
+	indexers := make(map[any][]int)
 
 	for i := range sui.Items {
 		if sui.Items[i] == nil {
@@ -551,9 +715,12 @@ func (sui *SettingUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 		if sui.Items[i].ID != "" {
 			ids = append(ids, sui.Items[i].ID)
 			ors = append(ors, setting.ID(sui.Items[i].ID))
+			indexers[sui.Items[i].ID] = append(indexers[sui.Items[i].ID], i)
 		} else if sui.Items[i].Name != "" {
 			ors = append(ors, setting.And(
 				setting.Name(sui.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", sui.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -580,15 +747,18 @@ func (sui *SettingUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet, 
 	}
 
 	for i := range es {
-		sui.Items[i].ID = es[i].ID
-		sui.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			sui.Items[j].ID = es[i].ID
+			sui.Items[j].Name = es[i].Name
+		}
 	}
 
 	for i := range sui.Items {
-		if sui.Items[i] == nil {
-			continue
-		}
-
 		if err := sui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}

@@ -82,7 +82,26 @@ var (
 func (h Handler) CollectionGet(req CollectionGetRequest) (CollectionGetResponse, int, error) {
 	query := h.modelClient.Templates().Query()
 
-	if len(req.CatalogIDs) != 0 {
+	if req.Project != nil {
+		ps := template.ProjectID(req.Project.ID)
+
+		if req.WithGlobal {
+			// Handle project scope request with global scope.
+			ps = template.Or(
+				template.ProjectID(req.Project.ID),
+				template.ProjectIDIsNil(),
+			)
+		}
+
+		query.Where(ps)
+	} else {
+		// Handle global scope request.
+		query.Where(template.ProjectIDIsNil())
+	}
+
+	if req.NonCatalog {
+		query.Where(template.CatalogIDIsNil())
+	} else if len(req.CatalogIDs) != 0 {
 		query.Where(template.CatalogIDIn(req.CatalogIDs...))
 	}
 
@@ -122,12 +141,14 @@ func (h Handler) CollectionGet(req CollectionGetRequest) (CollectionGetResponse,
 
 			var items []*model.TemplateOutput
 
+			ids := dm.IDs()
+
 			switch dm.Type {
 			case modelchange.EventTypeCreate, modelchange.EventTypeUpdate:
 				entities, err := query.Clone().
 					// Must extract catalog ID.
 					Select(template.FieldCatalogID).
-					Where(template.IDIn(dm.IDs...)).
+					Where(template.IDIn(ids...)).
 					Unique(false).
 					All(stream)
 				if err != nil {
@@ -136,10 +157,11 @@ func (h Handler) CollectionGet(req CollectionGetRequest) (CollectionGetResponse,
 
 				items = model.ExposeTemplates(entities)
 			case modelchange.EventTypeDelete:
-				items = make([]*model.TemplateOutput, len(dm.IDs))
-				for i := range dm.IDs {
+				items = make([]*model.TemplateOutput, len(ids))
+				for i := range ids {
 					items[i] = &model.TemplateOutput{
-						ID: dm.IDs[i],
+						ID:   ids[i],
+						Name: dm.Data[i].Name,
 					}
 				}
 			}

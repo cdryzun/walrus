@@ -28,6 +28,9 @@ var openAPISchemas = &openapi3.T{
 		Title:       "Restful APIs",
 		Description: "Restful APIs to access Walrus.",
 		Version:     version.Version,
+		Extensions: map[string]any{
+			openapi.ExtVersionGitCommit: version.GitCommit,
+		},
 	},
 	Security: getSecurityRequirements(),
 	Components: &openapi3.Components{
@@ -35,6 +38,10 @@ var openAPISchemas = &openapi3.T{
 		Responses:       getErrorResponses(),
 		Schemas:         openapi3.Schemas{},
 	},
+}
+
+func GetOpenAPISchemas() *openapi3.T {
+	return openAPISchemas
 }
 
 const (
@@ -129,6 +136,8 @@ func getOperationSummaryAndDescription(r *Route) (summary, description string) {
 			sb.WriteString("update ")
 		case http.MethodDelete:
 			sb.WriteString("delete ")
+		case http.MethodPatch:
+			sb.WriteString("patch ")
 		default:
 			sb.WriteString("get ")
 		}
@@ -306,7 +315,7 @@ func getOperationParameters(r *Route) (openapi3.Parameters, error) {
 				Schema:   openapi3.NewBoolSchema().NewRef(),
 				Required: false,
 				Extensions: map[string]any{
-					openapi.ExtCliIgnore: true,
+					openapi.ExtCliCmdIgnore: true,
 				},
 			},
 		})
@@ -787,6 +796,7 @@ func getSchemaOfGoType(
 			s.Items == nil &&
 			!(s.Type == openapi3.TypeString &&
 				slices.Contains([]string{stringTypeFormatBinary, stringTypeFormatByte}, s.Format)) {
+			visited.Delete(id)
 			return nil
 		}
 

@@ -5,6 +5,7 @@ import (
 	"entgo.io/ent/schema"
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
+	"entgo.io/ent/schema/index"
 
 	"github.com/seal-io/walrus/pkg/dao/entx"
 	"github.com/seal-io/walrus/pkg/dao/schema/intercept"
@@ -22,6 +23,13 @@ func (Token) Mixin() []ent.Mixin {
 	return []ent.Mixin{
 		mixin.ID(),
 		mixin.Time().WithoutUpdateTime(),
+	}
+}
+
+func (Token) Indexes() []ent.Index {
+	return []ent.Index{
+		index.Fields("subject_id", "name").
+			Unique(),
 	}
 }
 

@@ -140,11 +140,8 @@ RUN set -exo pipefail; \
       chmod a+x /usr/bin/crane && \
       rm -f /tmp/crane.tar.gz;
 
-# get deployer image
-RUN set -exo pipefail; \
-        DEPLOYER_IMAGE="sealio/terraform-deployer:v0.1.4"; \
-        crane pull --platform=${TARGETPLATFORM} ${DEPLOYER_IMAGE} ${K3S_DATA_DIR}/agent/images/terraform-deployer.tar;
-
+ENV CHARTS_DIR="/var/lib/walrus/manifests/charts" \
+    CLI_DIR="/var/lib/walrus/cli"
 
 # get casdoor
 ENV BEEGO_CONFIG_PATH="/etc/casdoor/app.conf"
@@ -152,17 +149,54 @@ COPY --from=sealio/casdoor:v1.344.0-seal.1 \
     /casdoor \
     /usr/bin/
 
-# walrus cli
-RUN set -eux; \
-    mkdir -p /var/lib/walrus/cli
-COPY /build/cli* /var/lib/walrus/cli/
+# get finops tools
+## NB: Please update walrus-images.txt if change the following images.
+ENV FINOPS_KUBECOST_COST_MODEL_IMAGE="sealio/mirrored-kubecost-cost-model:v1.105.2" \
+    FINOPS_PROMETHEUS_IMAGE="sealio/mirrored-prometheus:v2.46.0" \
+    FINOPS_PROMETHEUS_CONFIG_RELOADER_IMAGE="sealio/mirrored-prometheus-config-reloader:v0.67.0" \
+    FINOPS_NODE_EXPORTER_IMAGE="sealio/mirrored-node-exporter:v1.6.0" \
+    FINOPS_KUBE_STATE_MRTRICS_IMAGE="sealio/mirrored-kube-state-metrics:v2.9.2"
+RUN set -exo pipefail; \
+    crane pull --platform=${TARGETPLATFORM} ${FINOPS_KUBECOST_COST_MODEL_IMAGE} ${K3S_DATA_DIR}/agent/images/finops-kubecost-cost-model.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${FINOPS_PROMETHEUS_IMAGE} ${K3S_DATA_DIR}/agent/images/finops-prometheus.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${FINOPS_PROMETHEUS_CONFIG_RELOADER_IMAGE} ${K3S_DATA_DIR}/agent/images/finops-prometheus-config-reloader.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${FINOPS_NODE_EXPORTER_IMAGE} ${K3S_DATA_DIR}/agent/images/finops-node-exporter.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${FINOPS_KUBE_STATE_MRTRICS_IMAGE} ${K3S_DATA_DIR}/agent/images/finops-kube-state-metrics.tar
+ADD https://github.com/prometheus-community/helm-charts/releases/download/prometheus-24.0.0/prometheus-24.0.0.tgz ${CHARTS_DIR}/prometheus.tgz
 
+# get workflow tools
+## NB: Please update walrus-images.txt if change the following images.
+ENV WORKFLOW_CONTROLLER_IMAGE="sealio/mirrored-workflow-controller:v3.5.0" \
+    WORKFLOW_EXECUTOR_IMAGE="sealio/mirrored-argoexec:v3.5.0" \
+    WORKFLOW_STEP_IMAGE="sealio/curl-jq:v0.0.1"
+RUN set -exo pipefail; \
+    crane pull --platform=${TARGETPLATFORM} ${WORKFLOW_CONTROLLER_IMAGE} ${K3S_DATA_DIR}/agent/images/workflow-controller.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${WORKFLOW_EXECUTOR_IMAGE} ${K3S_DATA_DIR}/agent/images/workflow-executor.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${WORKFLOW_STEP_IMAGE} ${K3S_DATA_DIR}/agent/images/workflow-step.tar
+ENV WORKFLOW_ARGO_WORKFLOWS_CHART_PATH="${CHARTS_DIR}/argo-workflows.tgz"
+ADD https://github.com/argoproj/argo-helm/releases/download/argo-workflows-0.36.1/argo-workflows-0.36.1.tgz ${WORKFLOW_ARGO_WORKFLOWS_CHART_PATH}
+
+# get deployer tools
+## NB: Please update walrus-images.txt if change the following images.
+ENV DEPLOYER_TERRAFORM_IMAGE="sealio/terraform-deployer:v1.5.7-seal.1" \
+    DEPLOYER_OPENTOFU_IMAGE="sealio/opentofu-deployer:v1.6.0-seal.1" \
+    DEPLOYER_TERRAFORM_NETWORK_MIRROR_IMAGE="sealio/hermitcrab:v0.1.3"
+RUN set -exo pipefail; \
+    crane pull --platform=${TARGETPLATFORM} ${DEPLOYER_TERRAFORM_IMAGE} ${K3S_DATA_DIR}/agent/images/deployer-terraform.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${DEPLOYER_OPENTOFU_IMAGE} ${K3S_DATA_DIR}/agent/images/deployer-opentofu.tar; \
+    crane pull --platform=${TARGETPLATFORM} ${DEPLOYER_TERRAFORM_NETWORK_MIRROR_IMAGE} ${K3S_DATA_DIR}/agent/images/deployer-terraform-network-mirror.tar
+ENV DEPLOYER_TERRAFORM_HERMITCRAB_CHART_PATH="${CHARTS_DIR}/hermitcrab.tgz"
+ADD https://github.com/seal-io/helm-charts/releases/download/hermitcrab-0.1.3/hermitcrab-0.1.3.tgz ${DEPLOYER_TERRAFORM_HERMITCRAB_CHART_PATH}
+
+# get cli
+COPY /build/cli* ${CLI_DIR}/
 
 ARG SERVE_UI_INDEX="file:///var/lib/walrus/ui"
-ARG SERVE_TEMPLATE_REFER="release"
+ARG WALRUS_FILE_HUB_URL="file:///var/lib/walrus/walrus-file-hub"
 ENV SERVER_SETTING_SERVE_URL="" \
     SERVER_SETTING_SERVE_UI_INDEX="${SERVE_UI_INDEX}" \
-    SERVER_SETTING_SERVE_TEMPLATE_REFER="${SERVE_TEMPLATE_REFER}"
+    SERVER_SETTING_DEPLOYER_IMAGE="${DEPLOYER_TERRAFORM_IMAGE}" \
+    SERVER_SETTING_WALRUS_FILE_HUB_URL="${WALRUS_FILE_HUB_URL}"
 EXPOSE 80 443
 VOLUME /var/run/walrus
 COPY /image/ /

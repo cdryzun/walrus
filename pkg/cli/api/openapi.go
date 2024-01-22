@@ -7,13 +7,16 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"golang.org/x/exp/slices"
 
 	"github.com/seal-io/walrus/pkg/apis/runtime/openapi"
 	"github.com/seal-io/walrus/pkg/cli/config"
+	"github.com/seal-io/walrus/utils/log"
 	"github.com/seal-io/walrus/utils/strs"
+	versionutil "github.com/seal-io/walrus/utils/version"
 )
 
 const (
@@ -21,26 +24,70 @@ const (
 	JsonMediaType = "application/json"
 )
 
-// LoadOpenAPI load OpenAPI schema from response body and generate API.
-func LoadOpenAPI(resp *http.Response) (*API, error) {
-	data, err := io.ReadAll(resp.Body)
-	defer resp.Body.Close()
+var OpenAPI *API
+
+// InitOpenAPI load from cache or remote and setup command.
+func InitOpenAPI(sc *config.Config, skipCache bool) error {
+	start := time.Now()
+	defer func() {
+		log.Debugf("API loading took %s", time.Since(start))
+	}()
+
+	// Load from cache while existed.
+	if !skipCache {
+		log.Debug("Load from cache")
+
+		api := getAPIFromCache()
+		if api != nil {
+			OpenAPI = api
+			return nil
+		}
+	}
+
+	// Load from remote.
+	log.Debug("Load from remote")
+
+	ep, err := sc.OpenAPIURL()
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ep.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := sc.DoRequest(req)
+	defer func() { _ = resp.Body.Close() }()
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	t := openapi3.T{}
-
-	err = t.UnmarshalJSON(data)
+	api, err := LoadOpenAPIFromResp(resp)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	if !isSupportOpenAPI(t.OpenAPI) {
-		return nil, fmt.Errorf("unsupported OpenAPI version")
+	OpenAPI = api
+
+	return setAPIToCache(api)
+}
+
+// InitOpenAPIFromSchema load from schema and setup command.
+func InitOpenAPIFromSchema(t openapi3.T) error {
+	api, err := LoadOpenAPIFromSchema(t)
+	if err != nil {
+		return err
 	}
 
+	OpenAPI = api
+
+	return nil
+}
+
+// LoadOpenAPIFromSchema load the OpenAPI from schema.
+func LoadOpenAPIFromSchema(t openapi3.T) (*API, error) {
 	var (
 		api        = &API{}
 		operations []Operation
@@ -72,12 +119,42 @@ func LoadOpenAPI(resp *http.Response) (*API, error) {
 		}
 	}
 
-	api.Version = t.Info.Version
+	api.Version = Version{
+		Version:      t.Info.Version,
+		IsDevVersion: versionutil.IsDevVersionWith(t.Info.Version),
+	}
 	api.Short = t.Info.Title
 	api.Long = t.Info.Description
 	api.Operations = aggregateOperations(operations)
 
+	if t.Info.Extensions != nil {
+		api.Version.GitCommit = t.Info.Extensions[openapi.ExtVersionGitCommit].(string)
+	}
+
 	return api, nil
+}
+
+// LoadOpenAPIFromResp load OpenAPI schema from response body and generate API.
+func LoadOpenAPIFromResp(resp *http.Response) (*API, error) {
+	data, err := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+
+	if err != nil {
+		return nil, err
+	}
+
+	t := openapi3.T{}
+
+	err = t.UnmarshalJSON(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isSupportOpenAPI(t.OpenAPI) {
+		return nil, fmt.Errorf("unsupported OpenAPI version")
+	}
+
+	return LoadOpenAPIFromSchema(t)
 }
 
 func aggregateOperations(operations []Operation) []Operation {
@@ -174,6 +251,7 @@ func toOperation(
 	var (
 		allParams = make([]*openapi3.Parameter, len(op.Parameters))
 		seen      = make(map[string]struct{})
+		cmdIgnore bool
 	)
 
 	for i, p := range op.Parameters {
@@ -193,12 +271,17 @@ func toOperation(
 		headerParams []*Param
 	)
 
+	tag := ""
+	if len(op.Tags) > 0 {
+		tag = op.Tags[0]
+	}
+
 	for i, p := range allParams {
 		if p != nil && isIgnore(p.Extensions) {
 			continue
 		}
 
-		param := toParam(allParams[i], basePath)
+		param := toParam(allParams[i], tag)
 
 		switch p.In {
 		case "path":
@@ -212,11 +295,6 @@ func toOperation(
 
 	md := strings.ToUpper(method)
 	mediaType, bodyParams := toBodyParams(op.RequestBody, comps)
-
-	tag := ""
-	if len(op.Tags) > 0 {
-		tag = op.Tags[0]
-	}
 
 	dep := ""
 	if op.Deprecated {
@@ -233,6 +311,12 @@ func toOperation(
 		formats = strings.Split(efs, ",")
 	}
 
+	if isCmdIgnore(pathItem.Extensions) || isCmdIgnore(op.Extensions) {
+		cmdIgnore = true
+	}
+
+	columns := getTableColumns(op.Responses, comps)
+
 	return Operation{
 		Name:          name,
 		Group:         tag,
@@ -247,11 +331,13 @@ func toOperation(
 		BodyMediaType: mediaType,
 		Deprecated:    dep,
 		Formats:       formats,
+		CmdIgnore:     cmdIgnore,
+		TableColumns:  columns,
 	}
 }
 
 // toParam generate param from OpenAPI parameter.
-func toParam(p *openapi3.Parameter, uri string) *Param {
+func toParam(p *openapi3.Parameter, group string) *Param {
 	var (
 		typ = "string"
 		des string
@@ -289,10 +375,12 @@ func toParam(p *openapi3.Parameter, uri string) *Param {
 
 	for _, ijf := range config.InjectFields {
 		// Set context param if it's in inject fields and not the id in the uri.
-		if ijf == p.Name && !strings.HasSuffix(uri, fmt.Sprintf("{%s}", ijf)) {
+		if ijf == p.Name && strings.ToLower(strs.Singularize(group)) != p.Name {
 			param.DataFrom = DataFromContextAndArg
 		}
 	}
+
+	param.CmdIgnore = isCmdIgnore(p.Extensions)
 
 	return param
 }
@@ -443,6 +531,16 @@ func isIgnore(ext map[string]any) bool {
 	return getExt(ext, openapi.ExtCliIgnore, false)
 }
 
+// isCmdIgnore check whether it include cmd generate ignore extension.
+func isCmdIgnore(ext map[string]any) bool {
+	return getExt(ext, openapi.ExtCliCmdIgnore, false)
+}
+
+// isTableColumn check whether it is the column should show in table format.
+func isTableColumn(ext map[string]any) bool {
+	return getExt(ext, openapi.ExtCliTableColumn, false)
+}
+
 // getExt get extension by key.
 func getExt[T any](v map[string]any, key string, def T) T {
 	if v != nil {
@@ -465,4 +563,64 @@ func deGroupedName(group, name string) string {
 	name = strings.ToLower(name)
 
 	return name
+}
+
+// getTableColumns get the columns show in table format.
+func getTableColumns(body openapi3.Responses, comps *openapi3.Components) []string {
+	if body == nil {
+		return nil
+	}
+
+	bodyRef := body.Get(http.StatusOK)
+	if bodyRef == nil ||
+		bodyRef.Value == nil ||
+		bodyRef.Value.Content.Get(JsonMediaType) == nil ||
+		bodyRef.Value.Content.Get(JsonMediaType).Schema == nil ||
+		bodyRef.Value.Content.Get(JsonMediaType).Schema.Value == nil {
+		return nil
+	}
+
+	s := bodyRef.Value.Content.Get(JsonMediaType).Schema.Value
+
+	return getPropColumns(s, comps)
+}
+
+// getPropColumns support get column from response with below response cases:
+// case1: { "items": [{"column": ""}]}
+// case2: [{"column": ""}]
+func getPropColumns(sm *openapi3.Schema, comps *openapi3.Components) []string {
+	var columns []string
+
+	switch {
+	case sm.Type == openapi3.TypeArray:
+		if sm.Items != nil && sm.Items.Value != nil {
+			return getPropColumns(sm.Items.Value, comps)
+		}
+	case sm.Type == openapi3.TypeObject:
+		for n := range sm.Properties {
+			if sm.Properties[n] == nil || sm.Properties[n].Value == nil {
+				continue
+			}
+
+			ps := propSchema(sm.Properties[n], comps)
+			if ps == nil {
+				continue
+			}
+
+			if isIgnore(ps.Extensions) {
+				continue
+			}
+
+			if n == "items" && ps.Items != nil && ps.Items.Value != nil {
+				return getPropColumns(ps.Items.Value, comps)
+			}
+
+			if isTableColumn(ps.Extensions) {
+				columns = append(columns, n)
+				continue
+			}
+		}
+	}
+
+	return columns
 }

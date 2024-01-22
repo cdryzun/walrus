@@ -16,23 +16,29 @@ import (
 	"github.com/seal-io/walrus/pkg/apis/measure"
 	"github.com/seal-io/walrus/pkg/apis/perspective"
 	"github.com/seal-io/walrus/pkg/apis/project"
+	"github.com/seal-io/walrus/pkg/apis/proxy"
+	"github.com/seal-io/walrus/pkg/apis/resourcedefinition"
 	"github.com/seal-io/walrus/pkg/apis/role"
 	"github.com/seal-io/walrus/pkg/apis/runtime"
 	"github.com/seal-io/walrus/pkg/apis/setting"
 	"github.com/seal-io/walrus/pkg/apis/subject"
 	"github.com/seal-io/walrus/pkg/apis/template"
 	"github.com/seal-io/walrus/pkg/apis/templatecompletion"
+	"github.com/seal-io/walrus/pkg/apis/templateversion"
 	"github.com/seal-io/walrus/pkg/apis/ui"
 	"github.com/seal-io/walrus/pkg/apis/variable"
+	"github.com/seal-io/walrus/pkg/apis/walrusfilehub"
 	"github.com/seal-io/walrus/pkg/auths"
 	"github.com/seal-io/walrus/pkg/dao/model"
+	pkgworkflow "github.com/seal-io/walrus/pkg/workflow"
 )
 
 type SetupOptions struct {
 	// Configure from launching.
-	EnableAuthn bool
-	ConnQPS     int
-	ConnBurst   int
+	EnableAuthn           bool
+	ConnQPS               int
+	ConnBurst             int
+	WebsocketConnMaxPerIP int
 	// Derived from configuration.
 	K8sConfig    *rest.Config
 	ModelClient  *model.Client
@@ -49,10 +55,15 @@ func (s *Server) Setup(ctx context.Context, opts SetupOptions) (http.Handler, er
 		runtime.IsBidiStreamRequest,
 		// Maximum 10 connection per ip.
 		runtime.PerIP(func() runtime.Handle {
-			return runtime.RequestCounting(10, 5*time.Second)
+			return runtime.RequestCounting(opts.WebsocketConnMaxPerIP, 5*time.Second)
 		}),
 	)
 	i18n := runtime.I18n()
+
+	wc, err := pkgworkflow.NewArgoWorkflowClient(opts.ModelClient, opts.K8sConfig)
+	if err != nil {
+		return nil, err
+	}
 
 	// Initial router.
 	apisOpts := []runtime.RouterOption{
@@ -61,6 +72,7 @@ func (s *Server) Setup(ctx context.Context, opts SetupOptions) (http.Handler, er
 		runtime.SkipLoggingPaths(
 			"/",
 			"/cli",
+			"/walrus-file-hub",
 			"/assets/*filepath",
 			"/readyz",
 			"/livez",
@@ -90,11 +102,13 @@ func (s *Server) Setup(ctx context.Context, opts SetupOptions) (http.Handler, er
 		r.Routes(cost.Handle(opts.ModelClient))
 		r.Routes(dashboard.Handle(opts.ModelClient))
 		r.Routes(perspective.Handle(opts.ModelClient))
-		r.Routes(project.Handle(opts.ModelClient, opts.K8sConfig, opts.TlsCertified))
+		r.Routes(project.Handle(opts.ModelClient, opts.K8sConfig, wc))
+		r.Routes(resourcedefinition.Handle(opts.ModelClient, opts.K8sConfig))
 		r.Routes(role.Handle(opts.ModelClient))
 		r.Routes(setting.Handle(opts.ModelClient))
 		r.Routes(subject.Handle(opts.ModelClient))
 		r.Routes(template.Handle(opts.ModelClient))
+		r.Routes(templateversion.Handle(opts.ModelClient))
 		r.Routes(templatecompletion.Handle(opts.ModelClient))
 		r.Routes(variable.Handle(opts.ModelClient))
 	}
@@ -105,6 +119,12 @@ func (s *Server) Setup(ctx context.Context, opts SetupOptions) (http.Handler, er
 		r.Get("/cli", cli.Index())
 	}
 
+	walrusFileHubApis := apis.Group("")
+	{
+		r := walrusFileHubApis
+		r.Get("/walrus-file-hub/*filepath", walrusfilehub.Index(ctx, opts.ModelClient))
+	}
+
 	measureApis := apis.Group("").
 		Use(throttler)
 	{
@@ -112,6 +132,13 @@ func (s *Server) Setup(ctx context.Context, opts SetupOptions) (http.Handler, er
 		r.Get("/readyz", measure.Readyz())
 		r.Get("/livez", measure.Livez())
 		r.Get("/metrics", measure.Metrics())
+	}
+
+	proxyApis := apis.Group("/proxy").
+		Use(throttler, account.Filter)
+	{
+		r := proxyApis
+		r.Get("/*path", proxy.Proxy(opts.ModelClient))
 	}
 
 	debugApis := apis.Group("/debug")

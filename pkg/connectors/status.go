@@ -124,7 +124,7 @@ func (in *StatusSyncer) SyncFinOpsStatus(ctx context.Context, conn *model.Connec
 }
 
 func (in *StatusSyncer) syncFinOpsData(ctx context.Context, conn model.Connector) (bool, string, error) {
-	if conn.Type != types.ConnectorTypeK8s {
+	if conn.Type != types.ConnectorTypeKubernetes {
 		return false, "", nil
 	}
 
@@ -171,7 +171,8 @@ func (in *StatusSyncer) checkReachable(ctx context.Context, conn model.Connector
 	}
 
 	op, err := operator.Get(ctx, optypes.CreateOptions{
-		Connector: conn,
+		Connector:   conn,
+		ModelClient: in.client,
 	})
 	if err != nil {
 		return true, fmt.Errorf("invalid connector config: %w", err)
@@ -185,7 +186,7 @@ func (in *StatusSyncer) checkReachable(ctx context.Context, conn model.Connector
 }
 
 func (in *StatusSyncer) checkCostTool(ctx context.Context, conn model.Connector) (bool, error) {
-	if conn.Type != types.ConnectorTypeK8s {
+	if conn.Type != types.ConnectorTypeKubernetes {
 		return false, nil
 	}
 

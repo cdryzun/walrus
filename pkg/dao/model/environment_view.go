@@ -9,12 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/environment"
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
 	"github.com/seal-io/walrus/pkg/dao/schema/intercept"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // EnvironmentCreateInput holds the creation input of the Environment entity,
@@ -25,6 +27,8 @@ type EnvironmentCreateInput struct {
 	// Project indicates to create Environment entity MUST under the Project route.
 	Project *ProjectQueryInput `path:",inline" query:"-" json:"-"`
 
+	// Type of the environment.
+	Type string `path:"-" query:"-" json:"type,cli-table-column"`
 	// Name holds the value of the "name" field.
 	Name string `path:"-" query:"-" json:"name"`
 	// Description holds the value of the "description" field.
@@ -34,8 +38,10 @@ type EnvironmentCreateInput struct {
 
 	// Connectors specifies full inserting the new EnvironmentConnectorRelationship entities of the Environment entity.
 	Connectors []*EnvironmentConnectorRelationshipCreateInput `uri:"-" query:"-" json:"connectors,omitempty"`
-	// Services specifies full inserting the new Service entities of the Environment entity.
-	Services []*ServiceCreateInput `uri:"-" query:"-" json:"services,cli-ignore,omitempty"`
+	// Resources specifies full inserting the new Resource entities of the Environment entity.
+	Resources []*ResourceCreateInput `uri:"-" query:"-" json:"resources,cli-ignore,omitempty"`
+	// Variables specifies full inserting the new Variable entities of the Environment entity.
+	Variables []*VariableCreateInput `uri:"-" query:"-" json:"variables,omitempty"`
 }
 
 // Model returns the Environment entity for creating,
@@ -46,6 +52,7 @@ func (eci *EnvironmentCreateInput) Model() *Environment {
 	}
 
 	_e := &Environment{
+		Type:        eci.Type,
 		Name:        eci.Name,
 		Description: eci.Description,
 		Labels:      eci.Labels,
@@ -66,16 +73,27 @@ func (eci *EnvironmentCreateInput) Model() *Environment {
 		_e.Edges.Connectors = append(_e.Edges.Connectors,
 			eci.Connectors[j].Model())
 	}
-	if eci.Services != nil {
+	if eci.Resources != nil {
 		// Empty slice is used for clearing the edge.
-		_e.Edges.Services = make([]*Service, 0, len(eci.Services))
+		_e.Edges.Resources = make([]*Resource, 0, len(eci.Resources))
 	}
-	for j := range eci.Services {
-		if eci.Services[j] == nil {
+	for j := range eci.Resources {
+		if eci.Resources[j] == nil {
 			continue
 		}
-		_e.Edges.Services = append(_e.Edges.Services,
-			eci.Services[j].Model())
+		_e.Edges.Resources = append(_e.Edges.Resources,
+			eci.Resources[j].Model())
+	}
+	if eci.Variables != nil {
+		// Empty slice is used for clearing the edge.
+		_e.Edges.Variables = make([]*Variable, 0, len(eci.Variables))
+	}
+	for j := range eci.Variables {
+		if eci.Variables[j] == nil {
+			continue
+		}
+		_e.Edges.Variables = append(_e.Edges.Variables,
+			eci.Variables[j].Model())
 	}
 	return _e
 }
@@ -120,16 +138,30 @@ func (eci *EnvironmentCreateInput) ValidateWith(ctx context.Context, cs ClientSe
 		}
 	}
 
-	for i := range eci.Services {
-		if eci.Services[i] == nil {
+	for i := range eci.Resources {
+		if eci.Resources[i] == nil {
 			continue
 		}
 
-		if err := eci.Services[i].ValidateWith(ctx, cs, cache); err != nil {
+		if err := eci.Resources[i].ValidateWith(ctx, cs, cache); err != nil {
 			if !IsBlankResourceReferError(err) {
 				return err
 			} else {
-				eci.Services[i] = nil
+				eci.Resources[i] = nil
+			}
+		}
+	}
+
+	for i := range eci.Variables {
+		if eci.Variables[i] == nil {
+			continue
+		}
+
+		if err := eci.Variables[i].ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				eci.Variables[i] = nil
 			}
 		}
 	}
@@ -139,6 +171,8 @@ func (eci *EnvironmentCreateInput) ValidateWith(ctx context.Context, cs ClientSe
 
 // EnvironmentCreateInputs holds the creation input item of the Environment entities.
 type EnvironmentCreateInputsItem struct {
+	// Type of the environment.
+	Type string `path:"-" query:"-" json:"type,cli-table-column"`
 	// Name holds the value of the "name" field.
 	Name string `path:"-" query:"-" json:"name"`
 	// Description holds the value of the "description" field.
@@ -148,8 +182,10 @@ type EnvironmentCreateInputsItem struct {
 
 	// Connectors specifies full inserting the new EnvironmentConnectorRelationship entities.
 	Connectors []*EnvironmentConnectorRelationshipCreateInput `uri:"-" query:"-" json:"connectors,omitempty"`
-	// Services specifies full inserting the new Service entities.
-	Services []*ServiceCreateInput `uri:"-" query:"-" json:"services,cli-ignore,omitempty"`
+	// Resources specifies full inserting the new Resource entities.
+	Resources []*ResourceCreateInput `uri:"-" query:"-" json:"resources,cli-ignore,omitempty"`
+	// Variables specifies full inserting the new Variable entities.
+	Variables []*VariableCreateInput `uri:"-" query:"-" json:"variables,omitempty"`
 }
 
 // ValidateWith checks the EnvironmentCreateInputsItem entity with the given context and client set.
@@ -176,16 +212,30 @@ func (eci *EnvironmentCreateInputsItem) ValidateWith(ctx context.Context, cs Cli
 		}
 	}
 
-	for i := range eci.Services {
-		if eci.Services[i] == nil {
+	for i := range eci.Resources {
+		if eci.Resources[i] == nil {
 			continue
 		}
 
-		if err := eci.Services[i].ValidateWith(ctx, cs, cache); err != nil {
+		if err := eci.Resources[i].ValidateWith(ctx, cs, cache); err != nil {
 			if !IsBlankResourceReferError(err) {
 				return err
 			} else {
-				eci.Services[i] = nil
+				eci.Resources[i] = nil
+			}
+		}
+	}
+
+	for i := range eci.Variables {
+		if eci.Variables[i] == nil {
+			continue
+		}
+
+		if err := eci.Variables[i].ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				eci.Variables[i] = nil
 			}
 		}
 	}
@@ -216,6 +266,7 @@ func (eci *EnvironmentCreateInputs) Model() []*Environment {
 
 	for i := range eci.Items {
 		_e := &Environment{
+			Type:        eci.Items[i].Type,
 			Name:        eci.Items[i].Name,
 			Description: eci.Items[i].Description,
 			Labels:      eci.Items[i].Labels,
@@ -236,16 +287,27 @@ func (eci *EnvironmentCreateInputs) Model() []*Environment {
 			_e.Edges.Connectors = append(_e.Edges.Connectors,
 				eci.Items[i].Connectors[j].Model())
 		}
-		if eci.Items[i].Services != nil {
+		if eci.Items[i].Resources != nil {
 			// Empty slice is used for clearing the edge.
-			_e.Edges.Services = make([]*Service, 0, len(eci.Items[i].Services))
+			_e.Edges.Resources = make([]*Resource, 0, len(eci.Items[i].Resources))
 		}
-		for j := range eci.Items[i].Services {
-			if eci.Items[i].Services[j] == nil {
+		for j := range eci.Items[i].Resources {
+			if eci.Items[i].Resources[j] == nil {
 				continue
 			}
-			_e.Edges.Services = append(_e.Edges.Services,
-				eci.Items[i].Services[j].Model())
+			_e.Edges.Resources = append(_e.Edges.Resources,
+				eci.Items[i].Resources[j].Model())
+		}
+		if eci.Items[i].Variables != nil {
+			// Empty slice is used for clearing the edge.
+			_e.Edges.Variables = make([]*Variable, 0, len(eci.Items[i].Variables))
+		}
+		for j := range eci.Items[i].Variables {
+			if eci.Items[i].Variables[j] == nil {
+				continue
+			}
+			_e.Edges.Variables = append(_e.Edges.Variables,
+				eci.Items[i].Variables[j].Model())
 		}
 
 		_es[i] = _e
@@ -395,6 +457,7 @@ func (edi *EnvironmentDeleteInputs) ValidateWith(ctx context.Context, cs ClientS
 
 	ids := make([]object.ID, 0, len(edi.Items))
 	ors := make([]predicate.Environment, 0, len(edi.Items))
+	indexers := make(map[any][]int)
 
 	for i := range edi.Items {
 		if edi.Items[i] == nil {
@@ -404,9 +467,12 @@ func (edi *EnvironmentDeleteInputs) ValidateWith(ctx context.Context, cs ClientS
 		if edi.Items[i].ID != "" {
 			ids = append(ids, edi.Items[i].ID)
 			ors = append(ors, environment.ID(edi.Items[i].ID))
+			indexers[edi.Items[i].ID] = append(indexers[edi.Items[i].ID], i)
 		} else if edi.Items[i].Name != "" {
 			ors = append(ors, environment.And(
 				environment.Name(edi.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", edi.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -433,10 +499,203 @@ func (edi *EnvironmentDeleteInputs) ValidateWith(ctx context.Context, cs ClientS
 	}
 
 	for i := range es {
-		edi.Items[i].ID = es[i].ID
-		edi.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			edi.Items[j].ID = es[i].ID
+			edi.Items[j].Name = es[i].Name
+		}
 	}
 
+	return nil
+}
+
+// EnvironmentPatchInput holds the patch input of the Environment entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type EnvironmentPatchInput struct {
+	EnvironmentQueryInput `path:",inline" query:"-" json:"-"`
+
+	// Name holds the value of the "name" field.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// Description holds the value of the "description" field.
+	Description string `path:"-" query:"-" json:"description,omitempty"`
+	// Labels holds the value of the "labels" field.
+	Labels map[string]string `path:"-" query:"-" json:"labels,omitempty"`
+	// Annotations holds the value of the "annotations" field.
+	Annotations map[string]string `path:"-" query:"-" json:"annotations,omitempty"`
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+	// Type of the environment.
+	Type string `path:"-" query:"-" json:"type,omitempty"`
+
+	// Connectors indicates replacing the stale EnvironmentConnectorRelationship entities.
+	Connectors []*EnvironmentConnectorRelationshipCreateInput `uri:"-" query:"-" json:"connectors,omitempty"`
+
+	patchedEntity *Environment `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Environment partition entity for patching.
+func (epi *EnvironmentPatchInput) PatchModel() *Environment {
+	if epi == nil {
+		return nil
+	}
+
+	_e := &Environment{
+		Name:        epi.Name,
+		Description: epi.Description,
+		Labels:      epi.Labels,
+		Annotations: epi.Annotations,
+		CreateTime:  epi.CreateTime,
+		UpdateTime:  epi.UpdateTime,
+		Type:        epi.Type,
+	}
+
+	if epi.Project != nil {
+		_e.ProjectID = epi.Project.ID
+	}
+
+	if epi.Connectors != nil {
+		// Empty slice is used for clearing the edge.
+		_e.Edges.Connectors = make([]*EnvironmentConnectorRelationship, 0, len(epi.Connectors))
+	}
+	for j := range epi.Connectors {
+		if epi.Connectors[j] == nil {
+			continue
+		}
+		_e.Edges.Connectors = append(_e.Edges.Connectors,
+			epi.Connectors[j].Model())
+	}
+	return _e
+}
+
+// Model returns the Environment patched entity,
+// after validating.
+func (epi *EnvironmentPatchInput) Model() *Environment {
+	if epi == nil {
+		return nil
+	}
+
+	return epi.patchedEntity
+}
+
+// Validate checks the EnvironmentPatchInput entity.
+func (epi *EnvironmentPatchInput) Validate() error {
+	if epi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return epi.ValidateWith(epi.inputConfig.Context, epi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the EnvironmentPatchInput entity with the given context and client set.
+func (epi *EnvironmentPatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := epi.EnvironmentQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Environments().Query()
+
+	// Validate when querying under the Project route.
+	if epi.Project != nil {
+		if err := epi.Project.ValidateWith(ctx, cs, cache); err != nil {
+			return err
+		} else {
+			ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+			q.Where(
+				environment.ProjectID(epi.Project.ID))
+		}
+	}
+
+	for i := range epi.Connectors {
+		if epi.Connectors[i] == nil {
+			continue
+		}
+
+		if err := epi.Connectors[i].ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				epi.Connectors[i] = nil
+			}
+		}
+	}
+
+	if epi.Refer != nil {
+		if epi.Refer.IsID() {
+			q.Where(
+				environment.ID(epi.Refer.ID()))
+		} else if refers := epi.Refer.Split(1); len(refers) == 1 {
+			q.Where(
+				environment.Name(refers[0].String()))
+		} else {
+			return errors.New("invalid identify refer of environment")
+		}
+	} else if epi.ID != "" {
+		q.Where(
+			environment.ID(epi.ID))
+	} else if epi.Name != "" {
+		q.Where(
+			environment.Name(epi.Name))
+	} else {
+		return errors.New("invalid identify of environment")
+	}
+
+	q.Select(
+		environment.WithoutFields(
+			environment.FieldAnnotations,
+			environment.FieldCreateTime,
+			environment.FieldUpdateTime,
+		)...,
+	)
+
+	var e *Environment
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Environment)
+		}
+	}
+
+	_pm := epi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Environment)
+
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+	if e.Type != _obj.Type {
+		return errors.New("field type is immutable")
+	}
+
+	epi.patchedEntity = _obj
 	return nil
 }
 
@@ -812,6 +1071,7 @@ func (eui *EnvironmentUpdateInputs) ValidateWith(ctx context.Context, cs ClientS
 
 	ids := make([]object.ID, 0, len(eui.Items))
 	ors := make([]predicate.Environment, 0, len(eui.Items))
+	indexers := make(map[any][]int)
 
 	for i := range eui.Items {
 		if eui.Items[i] == nil {
@@ -821,9 +1081,12 @@ func (eui *EnvironmentUpdateInputs) ValidateWith(ctx context.Context, cs ClientS
 		if eui.Items[i].ID != "" {
 			ids = append(ids, eui.Items[i].ID)
 			ors = append(ors, environment.ID(eui.Items[i].ID))
+			indexers[eui.Items[i].ID] = append(indexers[eui.Items[i].ID], i)
 		} else if eui.Items[i].Name != "" {
 			ors = append(ors, environment.And(
 				environment.Name(eui.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", eui.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -850,15 +1113,18 @@ func (eui *EnvironmentUpdateInputs) ValidateWith(ctx context.Context, cs ClientS
 	}
 
 	for i := range es {
-		eui.Items[i].ID = es[i].ID
-		eui.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			eui.Items[j].ID = es[i].ID
+			eui.Items[j].Name = es[i].Name
+		}
 	}
 
 	for i := range eui.Items {
-		if eui.Items[i] == nil {
-			continue
-		}
-
 		if err := eui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}
@@ -875,6 +1141,7 @@ type EnvironmentOutput struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	CreateTime  *time.Time        `json:"createTime,omitempty"`
 	UpdateTime  *time.Time        `json:"updateTime,omitempty"`
+	Type        string            `json:"type,cli-table-column,omitempty"`
 
 	Project    *ProjectOutput                            `json:"project,omitempty"`
 	Connectors []*EnvironmentConnectorRelationshipOutput `json:"connectors,omitempty"`
@@ -903,6 +1170,7 @@ func ExposeEnvironment(_e *Environment) *EnvironmentOutput {
 		Labels:      _e.Labels,
 		CreateTime:  _e.CreateTime,
 		UpdateTime:  _e.UpdateTime,
+		Type:        _e.Type,
 	}
 
 	if _e.Edges.Project != nil {

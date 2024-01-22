@@ -4,15 +4,18 @@ import (
 	"context"
 	stdsql "database/sql"
 	"errors"
+	"strings"
 
 	"entgo.io/ent/dialect/sql"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	"github.com/seal-io/walrus/pkg/dao/model"
+	"github.com/seal-io/walrus/pkg/dao/model/connector"
 	"github.com/seal-io/walrus/pkg/dao/model/environment"
 	"github.com/seal-io/walrus/pkg/dao/model/environmentconnectorrelationship"
 	"github.com/seal-io/walrus/pkg/dao/model/project"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/errorx"
 	"github.com/seal-io/walrus/utils/strs"
 )
 
@@ -26,6 +29,7 @@ func EnvironmentConnectorsEdgeSave(ctx context.Context, mc model.ClientSet, enti
 	var (
 		newItems       = entity.Edges.Connectors
 		newItemsKeySet = sets.New[string]()
+		newItemIDs     = make([]object.ID, 0, len(newItems))
 	)
 
 	for i := range newItems {
@@ -35,6 +39,24 @@ func EnvironmentConnectorsEdgeSave(ctx context.Context, mc model.ClientSet, enti
 		newItems[i].EnvironmentID = entity.ID
 
 		newItemsKeySet.Insert(strs.Join("/", newItems[i].EnvironmentID, newItems[i].ConnectorID))
+		newItemIDs = append(newItemIDs, newItems[i].ConnectorID)
+	}
+
+	// Validate whether new items have the same use with environment.
+	{
+		cnt, err := mc.Connectors().Query().
+			Select().
+			Where(
+				connector.IDIn(newItemIDs...),
+				connector.ApplicableEnvironmentType(entity.Type)).
+			Count(ctx)
+		if err != nil {
+			return err
+		}
+
+		if cnt != len(newItemIDs) {
+			return errorx.New("invalid connectors: unmatched environment type")
+		}
 	}
 
 	// Add/Update new items.
@@ -81,6 +103,79 @@ func EnvironmentConnectorsEdgeSave(ctx context.Context, mc model.ClientSet, enti
 			return err
 		}
 	}
+
+	err = updateProviderLabels(ctx, mc, entity, newItemIDs)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+const (
+	ProviderLabelPrefix = "walrus.seal.io/provider-"
+	LabelValueTrue      = "true"
+)
+
+// updateProviderLabels updates the labels of model.Environment entity by connector types.
+func updateProviderLabels(
+	ctx context.Context,
+	mc model.ClientSet,
+	entity *model.Environment,
+	newItemIDs []object.ID,
+) error {
+	if entity.Labels == nil {
+		entity.Labels = make(map[string]string)
+	}
+
+	for k := range entity.Labels {
+		if strings.HasPrefix(k, ProviderLabelPrefix) {
+			delete(entity.Labels, k)
+		}
+	}
+
+	if len(newItemIDs) != 0 {
+		conns, err := mc.Connectors().Query().
+			Where(connector.IDIn(newItemIDs...)).
+			Select(connector.FieldType).
+			All(ctx)
+		if err != nil {
+			return err
+		}
+
+		for _, conn := range conns {
+			entity.Labels[ProviderLabelPrefix+strings.ToLower(conn.Type)] = LabelValueTrue
+		}
+	}
+
+	return mc.Environments().UpdateOne(entity).
+		SetLabels(entity.Labels).
+		Exec(ctx)
+}
+
+// EnvironmentVariablesEdgeSave saves the edge variables of model.Environment entity.
+func EnvironmentVariablesEdgeSave(ctx context.Context, mc model.ClientSet, entity *model.Environment) error {
+	if entity.Edges.Variables == nil {
+		return nil
+	}
+
+	newItems := entity.Edges.Variables
+	for i := range newItems {
+		if newItems[i] == nil {
+			return errors.New("invalid input: nil variable")
+		}
+		newItems[i].EnvironmentID = entity.ID
+		newItems[i].ProjectID = entity.ProjectID
+	}
+
+	variables, err := mc.Variables().CreateBulk().
+		Set(newItems...).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+
+	entity.Edges.Variables = variables
 
 	return nil
 }

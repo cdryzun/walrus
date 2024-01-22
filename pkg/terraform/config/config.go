@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
 
+	"github.com/seal-io/walrus/pkg/templates/translator"
 	"github.com/seal-io/walrus/pkg/terraform/block"
 	"github.com/seal-io/walrus/pkg/terraform/convertor"
 	"github.com/seal-io/walrus/utils/log"
@@ -147,17 +150,13 @@ func (c *Config) initAttributes() error {
 		return nil
 	}
 
-	attributes, err := block.ConvertToCtyWithJson(c.Attributes)
+	translator := translator.NewTerraformTranslator()
+
+	attrKeys, attrMap, err := translator.ToOriginalTypeValues(c.Attributes)
 	if err != nil {
 		return err
 	}
 
-	attrKeys := block.SortValueKeys(attributes)
-	if len(attrKeys) == 0 {
-		return nil
-	}
-
-	attrMap := attributes.AsValueMap()
 	for _, attr := range attrKeys {
 		c.file.Body().SetAttributeValue(attr, attrMap[attr])
 	}
@@ -324,10 +323,10 @@ func loadModuleBlocks(moduleConfigs []*ModuleConfig, providers block.Blocks) blo
 			continue
 		}
 		// Inject providers alias to the module.
-		if mc.Schema != nil {
+		if len(mc.SchemaData.RequiredProviders) != 0 {
 			moduleProviders := map[string]any{}
 
-			for _, p := range mc.Schema.RequiredProviders {
+			for _, p := range mc.SchemaData.RequiredProviders {
 				if _, ok := providersMap[p.Name]; !ok {
 					logger.Warnf("provider not found, skip provider: %s", p.Name)
 					continue
@@ -345,7 +344,10 @@ func loadModuleBlocks(moduleConfigs []*ModuleConfig, providers block.Blocks) blo
 
 // loadVariableBlocks returns config variables to get terraform variable config block.
 func loadVariableBlocks(opts *VariableOptions) block.Blocks {
-	blocks := make(block.Blocks, 0, len(opts.Variables)+len(opts.DependencyOutputs))
+	var (
+		logger = log.WithName("terraform").WithName("config")
+		blocks = make(block.Blocks, 0, len(opts.Variables)+len(opts.DependencyOutputs))
+	)
 
 	// Secret variables.
 	for name, sensitive := range opts.Variables {
@@ -361,11 +363,17 @@ func loadVariableBlocks(opts *VariableOptions) block.Blocks {
 
 	// Dependency variables.
 	for k, o := range opts.DependencyOutputs {
+		t, err := typeExprTokens(o.Type)
+		if err != nil {
+			logger.Errorf("get type expr tokens failed, %s", err.Error())
+			t = hclwrite.TokensForIdentifier("string")
+		}
+
 		blocks = append(blocks, &block.Block{
 			Type:   block.TypeVariable,
-			Labels: []string{opts.ServicePrefix + k},
+			Labels: []string{opts.ResourcePrefix + k},
 			Attributes: map[string]any{
-				"type":      `{{string}}`,
+				"type":      tokensToTypeAttr(t),
 				"sensitive": o.Sensitive,
 			},
 		})
@@ -377,8 +385,8 @@ func loadVariableBlocks(opts *VariableOptions) block.Blocks {
 // loadOutputBlocks returns terraform outputs config block.
 func loadOutputBlocks(opts OutputOptions) block.Blocks {
 	blockConfig := func(output Output) (string, string) {
-		label := fmt.Sprintf("%s_%s", output.ServiceName, output.Name)
-		value := fmt.Sprintf(`{{module.%s.%s}}`, output.ServiceName, output.Name)
+		label := fmt.Sprintf("%s_%s", output.ResourceName, output.Name)
+		value := fmt.Sprintf(`{{module.%s.%s}}`, output.ResourceName, output.Name)
 
 		return label, value
 	}
@@ -427,4 +435,87 @@ func CreateConfigToBytes(opts CreateOptions) ([]byte, error) {
 	}
 
 	return conf.Bytes()
+}
+
+// tokensToTypeAttr returns the HCL tokens for a type attribute.
+func tokensToTypeAttr(tokens hclwrite.Tokens) string {
+	return fmt.Sprintf("{{%s}}", tokens.Bytes())
+}
+
+// typeExprTokens returns the HCL tokens for a type expression.
+func typeExprTokens(ty cty.Type) (hclwrite.Tokens, error) {
+	switch ty {
+	case cty.String:
+		return hclwrite.TokensForIdentifier("string"), nil
+	case cty.Bool:
+		return hclwrite.TokensForIdentifier("bool"), nil
+	case cty.Number:
+		return hclwrite.TokensForIdentifier("number"), nil
+	case cty.DynamicPseudoType:
+		return hclwrite.TokensForIdentifier("any"), nil
+	}
+
+	if ty.IsCollectionType() {
+		etyTokens, err := typeExprTokens(ty.ElementType())
+		if err != nil {
+			return nil, err
+		}
+
+		switch {
+		case ty.IsListType():
+			return hclwrite.TokensForFunctionCall("list", etyTokens), nil
+		case ty.IsSetType():
+			return hclwrite.TokensForFunctionCall("set", etyTokens), nil
+		case ty.IsMapType():
+			return hclwrite.TokensForFunctionCall("map", etyTokens), nil
+		default:
+			// Should never happen because the above is exhaustive.
+			return nil, fmt.Errorf("unsupported collection type: %s", ty.FriendlyName())
+		}
+	}
+
+	if ty.IsObjectType() {
+		atys := ty.AttributeTypes()
+		names := make([]string, 0, len(atys))
+
+		for name := range atys {
+			names = append(names, name)
+		}
+
+		sort.Strings(names)
+
+		items := make([]hclwrite.ObjectAttrTokens, len(names))
+
+		for i, name := range names {
+			value, err := typeExprTokens(atys[name])
+			if err != nil {
+				return nil, err
+			}
+
+			items[i] = hclwrite.ObjectAttrTokens{
+				Name:  hclwrite.TokensForIdentifier(name),
+				Value: value,
+			}
+		}
+
+		return hclwrite.TokensForObject(items), nil
+	}
+
+	if ty.IsTupleType() {
+		etys := ty.TupleElementTypes()
+		items := make([]hclwrite.Tokens, len(etys))
+
+		for i, ety := range etys {
+			value, err := typeExprTokens(ety)
+			if err != nil {
+				return nil, err
+			}
+
+			items[i] = value
+		}
+
+		return hclwrite.TokensForTuple(items), nil
+	}
+
+	return nil, fmt.Errorf("unsupported type: %s", ty.GoString())
 }

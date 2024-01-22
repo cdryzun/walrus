@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/predicate"
@@ -16,6 +17,7 @@ import (
 	"github.com/seal-io/walrus/pkg/dao/schema/intercept"
 	"github.com/seal-io/walrus/pkg/dao/types/crypto"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // VariableCreateInput holds the creation input of the Variable entity,
@@ -355,6 +357,7 @@ func (vdi *VariableDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 
 	ids := make([]object.ID, 0, len(vdi.Items))
 	ors := make([]predicate.Variable, 0, len(vdi.Items))
+	indexers := make(map[any][]int)
 
 	for i := range vdi.Items {
 		if vdi.Items[i] == nil {
@@ -364,9 +367,12 @@ func (vdi *VariableDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 		if vdi.Items[i].ID != "" {
 			ids = append(ids, vdi.Items[i].ID)
 			ors = append(ors, variable.ID(vdi.Items[i].ID))
+			indexers[vdi.Items[i].ID] = append(indexers[vdi.Items[i].ID], i)
 		} else if vdi.Items[i].Name != "" {
 			ors = append(ors, variable.And(
 				variable.Name(vdi.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", vdi.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -393,10 +399,199 @@ func (vdi *VariableDeleteInputs) ValidateWith(ctx context.Context, cs ClientSet,
 	}
 
 	for i := range es {
-		vdi.Items[i].ID = es[i].ID
-		vdi.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			vdi.Items[j].ID = es[i].ID
+			vdi.Items[j].Name = es[i].Name
+		}
 	}
 
+	return nil
+}
+
+// VariablePatchInput holds the patch input of the Variable entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type VariablePatchInput struct {
+	VariableQueryInput `path:",inline" query:"-" json:"-"`
+
+	// CreateTime holds the value of the "create_time" field.
+	CreateTime *time.Time `path:"-" query:"-" json:"createTime,omitempty"`
+	// UpdateTime holds the value of the "update_time" field.
+	UpdateTime *time.Time `path:"-" query:"-" json:"updateTime,omitempty"`
+	// The name of variable.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// The value of variable, store in string.
+	Value crypto.String `path:"-" query:"-" json:"value,omitempty"`
+	// The value is sensitive or not.
+	Sensitive bool `path:"-" query:"-" json:"sensitive,omitempty"`
+	// Description of the variable.
+	Description string `path:"-" query:"-" json:"description,omitempty"`
+
+	patchedEntity *Variable `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the Variable partition entity for patching.
+func (vpi *VariablePatchInput) PatchModel() *Variable {
+	if vpi == nil {
+		return nil
+	}
+
+	_v := &Variable{
+		CreateTime:  vpi.CreateTime,
+		UpdateTime:  vpi.UpdateTime,
+		Name:        vpi.Name,
+		Value:       vpi.Value,
+		Sensitive:   vpi.Sensitive,
+		Description: vpi.Description,
+	}
+
+	if vpi.Project != nil {
+		_v.ProjectID = vpi.Project.ID
+	}
+	if vpi.Environment != nil {
+		_v.EnvironmentID = vpi.Environment.ID
+	}
+
+	return _v
+}
+
+// Model returns the Variable patched entity,
+// after validating.
+func (vpi *VariablePatchInput) Model() *Variable {
+	if vpi == nil {
+		return nil
+	}
+
+	return vpi.patchedEntity
+}
+
+// Validate checks the VariablePatchInput entity.
+func (vpi *VariablePatchInput) Validate() error {
+	if vpi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return vpi.ValidateWith(vpi.inputConfig.Context, vpi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the VariablePatchInput entity with the given context and client set.
+func (vpi *VariablePatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := vpi.VariableQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.Variables().Query()
+
+	// Validate when querying under the Project route.
+	if vpi.Project != nil {
+		if err := vpi.Project.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				vpi.Project = nil
+				q.Where(
+					variable.ProjectIDIsNil())
+			}
+		} else {
+			ctx = valueContext(ctx, intercept.WithProjectInterceptor)
+			q.Where(
+				variable.ProjectID(vpi.Project.ID))
+		}
+	} else {
+		q.Where(
+			variable.ProjectIDIsNil())
+	}
+
+	// Validate when querying under the Environment route.
+	if vpi.Environment != nil {
+		if err := vpi.Environment.ValidateWith(ctx, cs, cache); err != nil {
+			if !IsBlankResourceReferError(err) {
+				return err
+			} else {
+				vpi.Environment = nil
+				q.Where(
+					variable.EnvironmentIDIsNil())
+			}
+		} else {
+			q.Where(
+				variable.EnvironmentID(vpi.Environment.ID))
+		}
+	} else {
+		q.Where(
+			variable.EnvironmentIDIsNil())
+	}
+
+	if vpi.Refer != nil {
+		if vpi.Refer.IsID() {
+			q.Where(
+				variable.ID(vpi.Refer.ID()))
+		} else if refers := vpi.Refer.Split(1); len(refers) == 1 {
+			q.Where(
+				variable.Name(refers[0].String()))
+		} else {
+			return errors.New("invalid identify refer of variable")
+		}
+	} else if vpi.ID != "" {
+		q.Where(
+			variable.ID(vpi.ID))
+	} else if vpi.Name != "" {
+		q.Where(
+			variable.Name(vpi.Name))
+	} else {
+		return errors.New("invalid identify of variable")
+	}
+
+	q.Select(
+		variable.WithoutFields(
+			variable.FieldCreateTime,
+			variable.FieldUpdateTime,
+		)...,
+	)
+
+	var e *Variable
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*Variable)
+		}
+	}
+
+	_pm := vpi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*Variable)
+
+	if !reflect.DeepEqual(e.CreateTime, _obj.CreateTime) {
+		return errors.New("field createTime is immutable")
+	}
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+
+	vpi.patchedEntity = _obj
 	return nil
 }
 
@@ -798,6 +993,7 @@ func (vui *VariableUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 
 	ids := make([]object.ID, 0, len(vui.Items))
 	ors := make([]predicate.Variable, 0, len(vui.Items))
+	indexers := make(map[any][]int)
 
 	for i := range vui.Items {
 		if vui.Items[i] == nil {
@@ -807,9 +1003,12 @@ func (vui *VariableUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 		if vui.Items[i].ID != "" {
 			ids = append(ids, vui.Items[i].ID)
 			ors = append(ors, variable.ID(vui.Items[i].ID))
+			indexers[vui.Items[i].ID] = append(indexers[vui.Items[i].ID], i)
 		} else if vui.Items[i].Name != "" {
 			ors = append(ors, variable.And(
 				variable.Name(vui.Items[i].Name)))
+			indexerKey := fmt.Sprint("/", vui.Items[i].Name)
+			indexers[indexerKey] = append(indexers[indexerKey], i)
 		} else {
 			return errors.New("found item hasn't identify")
 		}
@@ -836,15 +1035,18 @@ func (vui *VariableUpdateInputs) ValidateWith(ctx context.Context, cs ClientSet,
 	}
 
 	for i := range es {
-		vui.Items[i].ID = es[i].ID
-		vui.Items[i].Name = es[i].Name
+		indexer := indexers[es[i].ID]
+		if indexer == nil {
+			indexerKey := fmt.Sprint("/", es[i].Name)
+			indexer = indexers[indexerKey]
+		}
+		for _, j := range indexer {
+			vui.Items[j].ID = es[i].ID
+			vui.Items[j].Name = es[i].Name
+		}
 	}
 
 	for i := range vui.Items {
-		if vui.Items[i] == nil {
-			continue
-		}
-
 		if err := vui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}

@@ -1,11 +1,12 @@
 package settings
 
 import (
-	"k8s.io/utils/pointer"
+	"time"
 
 	"github.com/seal-io/walrus/pkg/casdoor"
 	"github.com/seal-io/walrus/pkg/dao/model"
 	"github.com/seal-io/walrus/pkg/dao/types/crypto"
+	"github.com/seal-io/walrus/utils/pointer"
 	"github.com/seal-io/walrus/utils/strs"
 )
 
@@ -47,7 +48,22 @@ var (
 		"DeployerImage",
 		editable,
 		// When the image is updated, sync the one in server Dockerfile.
-		initializeFrom("sealio/terraform-deployer:v0.1.4"),
+		initializeFromEnv("sealio/terraform-deployer:v1.5.7-seal.1"),
+		modifyWith(notBlank, containerImageReference),
+	)
+	// DeployerNetworkMirrorUrl indicates the URL to configure the network mirror for deployer.
+	DeployerNetworkMirrorUrl = newValue(
+		"DeployerNetworkMirrorUrl",
+		editable,
+		initializeFromEnv(""),
+		modifyWith(httpUrl),
+	)
+	// WorkflowStepServiceImage indicates the image used by workflow step service.
+	WorkflowStepServiceImage = newValue(
+		"WorkflowStepServiceImage",
+		editable,
+		// When the image is updated, sync the one in server Dockerfile.
+		initializeFromEnv("sealio/curl-jq:v0.0.1"),
 		modifyWith(notBlank, containerImageReference),
 	)
 )
@@ -58,7 +74,7 @@ var (
 	BootPwdGainSource = newValue(
 		"BootPwdGainSource",
 		hidden,
-		initializeFrom("Specified"),
+		initializeFrom("Invalid"),
 		nil)
 	// CasdoorCred keeps the AK/SK for accessing Casdoor server.
 	CasdoorCred = newValue(
@@ -115,14 +131,44 @@ var (
 	EnableTelemetry = newValue(
 		"EnableTelemetry",
 		editable,
-		initializeFrom("true"),
+		initializeFromEnv("true"),
 		modifyWith(notBlank))
 	// EnableSyncCatalog keeps the user config for enable sync catalog or not.
 	EnableSyncCatalog = newValue(
 		"EnableSyncCatalog",
 		editable,
-		initializeFrom("true"),
+		initializeFromEnv("true"),
 		modifyWith(notBlank))
+	// ImageRegistry config the image registry for seal tools, like finOps tools.
+	ImageRegistry = newValue(
+		"ImageRegistry",
+		editable,
+		initializeFromEnv("docker.io"),
+		modifyWith(notBlank))
+	EnableBuiltinCatalog = newValue(
+		"EnableBuiltinCatalog",
+		editable,
+		initializeFromEnv("true"),
+		modifyWith(notBlank))
+	// SkipRemoteTLSVerify indicates whether skip SSL verification when accessing remote server.
+	SkipRemoteTLSVerify = newValue(
+		"SkipRemoteTLSVerify",
+		editable,
+		initializeFromEnv("false"),
+		modifyWith(notBlank))
+	// LocalEnvironmentMode indicates mode for setting up a local environment in the default project.
+	LocalEnvironmentMode = newValue(
+		"LocalEnvironmentMode",
+		private,
+		initializeFromEnv("kubernetes"),
+		modifyWith(never))
+	// WalrusFileHubURL keeps the address for Walrus file hub.
+	WalrusFileHubURL = newValue(
+		"WalrusFileHubURL",
+		private,
+		initializeFromEnv("https://github.com/seal-io/walrus-file-hub"),
+		modifyWith(notBlank, anyUrl),
+	)
 )
 
 // the built-in settings for server cron jobs.
@@ -133,7 +179,7 @@ var (
 	ConnectorCostCollectCronExpr = newValue(
 		"ConnectorCostCollectCronExpr",
 		editable,
-		initializeFrom("0 0 * ? * *"),
+		initializeFromEnv("0 0 * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
 	// ConnectorStatusSyncCronExpr indicates the cron expression of sync connector status,
@@ -141,31 +187,31 @@ var (
 	ConnectorStatusSyncCronExpr = newValue(
 		"ConnectorStatusSyncCronExpr",
 		editable,
-		initializeFrom("0 */5 * ? * *"),
+		initializeFromEnv("0 */5 * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
-	// ResourceStatusSyncCronExpr indicates the cron expression of sync service resource status,
+	// ResourceComponentStatusSyncCronExpr indicates the cron expression of sync resource component status,
 	// default cron expression means stating every 1 minute.
-	ResourceStatusSyncCronExpr = newValue(
-		"ResourceStatusSyncCronExpr",
+	ResourceComponentStatusSyncCronExpr = newValue(
+		"ResourceComponentStatusSyncCronExpr",
 		editable,
-		initializeFrom("0 */1 * ? * *"),
+		initializeFromEnv("0 */1 * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
-	// ResourceLabelApplyCronExpr indicates the cron expression of set labels to service resource,
+	// ResourceComponentLabelApplyCronExpr indicates the cron expression of set labels to resource component,
 	// default cron expression means setting every 2 minutes.
-	ResourceLabelApplyCronExpr = newValue(
-		"ResourceLabelApplyCronExpr",
+	ResourceComponentLabelApplyCronExpr = newValue(
+		"ResourceComponentLabelApplyCronExpr",
 		editable,
-		initializeFrom("0 */2 * ? * *"),
+		initializeFromEnv("0 */2 * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
-	// ResourceComponentsDiscoverCronExpr indicates the cron expression of discover service resource basics,
+	// ResourceComponentsDiscoverCronExpr indicates the cron expression of discover resource component basics,
 	// default cron expression means discovering every 1 minute.
 	ResourceComponentsDiscoverCronExpr = newValue(
 		"ResourceComponentsDiscoverCronExpr",
 		editable,
-		initializeFrom("0 */1 * ? * *"),
+		initializeFromEnv("0 */1 * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
 	// TokenDeploymentExpiredCleanCronExpr indicates the cron expression of clean expired deployment token,
@@ -176,12 +222,12 @@ var (
 		initializeFrom("0 */30 * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
-	// ServiceRelationshipCheckCronExpr indicates the cron expression of deploy scheduled service,
+	// ResourceRelationshipCheckCronExpr indicates the cron expression of deploy scheduled resource,
 	// default cron expression means deploying every 30 seconds.
-	ServiceRelationshipCheckCronExpr = newValue(
-		"ServiceRelationshipCheckCronExpr",
+	ResourceRelationshipCheckCronExpr = newValue(
+		"ResourceRelationshipCheckCronExpr",
 		editable,
-		initializeFrom("*/30 * * ? * *"),
+		initializeFromEnv("*/30 * * ? * *"),
 		modifyWith(notBlank, cronExpression),
 	)
 	// TelemetryPeriodicReportCronExpr indicates the cron expression of telemetry synchronization event,
@@ -193,12 +239,12 @@ var (
 		modifyWith(notBlank, cronExpression),
 	)
 	// CatalogTemplateSyncCronExpr indicates the cron expression of catalog template synchronization event,
-	// default cron expression means sync at 1 o'clock evey day.
+	// default cron expression means sync at 1 o'clock evey day, and new cron must be at least 30 minutes.
 	CatalogTemplateSyncCronExpr = newValue(
 		"CatalogTemplateSyncCronExpr",
 		private,
 		initializeFrom("0 0 1 * * *"),
-		modifyWith(notBlank, cronExpression),
+		modifyWith(notBlank, cronExpression, cronAtLeast(30*time.Minute)),
 	)
 )
 

@@ -14,6 +14,9 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/seal-io/walrus/pkg/apis/config"
+	"github.com/seal-io/walrus/pkg/apis/runtime"
+	"github.com/seal-io/walrus/pkg/cli/api"
 	"github.com/seal-io/walrus/pkg/dao/types"
 	"github.com/seal-io/walrus/pkg/kms"
 	"github.com/seal-io/walrus/utils/dynacert"
@@ -63,6 +66,8 @@ const (
 
 func (s *Server) Serve(c context.Context, opts ServeOptions) error {
 	s.logger.Info("starting")
+
+	config.TlsCertified.Set(opts.TlsCertified)
 
 	handler, err := s.Setup(c, opts.SetupOptions)
 	if err != nil {
@@ -210,6 +215,18 @@ func (s *Server) Serve(c context.Context, opts ServeOptions) error {
 		s.logger.Infof("serving http on %q by %q", addr, nw)
 
 		return serve(ctx, h, lg, ls)
+	})
+
+	// Init OpenAPI for cli operation.
+	g.Go(func(ctx context.Context) error {
+		err := api.InitOpenAPIFromSchema(*runtime.GetOpenAPISchemas())
+		if err != nil {
+			return err
+		}
+
+		s.logger.Infof("successfully initialized openapi schema for operation")
+
+		return nil
 	})
 
 	return g.Wait()

@@ -9,11 +9,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/seal-io/walrus/pkg/dao/model/costreport"
 	"github.com/seal-io/walrus/pkg/dao/types"
 	"github.com/seal-io/walrus/pkg/dao/types/object"
+	"github.com/seal-io/walrus/utils/json"
 )
 
 // CostReportCreateInput holds the creation input of the CostReport entity,
@@ -420,6 +422,247 @@ func (crdi *CostReportDeleteInputs) ValidateWith(ctx context.Context, cs ClientS
 	return nil
 }
 
+// CostReportPatchInput holds the patch input of the CostReport entity,
+// please tags with `path:",inline" json:",inline"` if embedding.
+type CostReportPatchInput struct {
+	CostReportQueryInput `path:",inline" query:"-" json:"-"`
+
+	// Usage start time for current cost.
+	StartTime time.Time `path:"-" query:"-" json:"startTime,omitempty"`
+	// Usage end time for current cost.
+	EndTime time.Time `path:"-" query:"-" json:"endTime,omitempty"`
+	// Usage minutes from start time to end time.
+	Minutes float64 `path:"-" query:"-" json:"minutes,omitempty"`
+	// Resource name for current cost, could be __unmounted__.
+	Name string `path:"-" query:"-" json:"name,omitempty"`
+	// String generated from resource properties, used to identify this cost.
+	Fingerprint string `path:"-" query:"-" json:"fingerprint,omitempty"`
+	// Cluster name for current cost.
+	ClusterName string `path:"-" query:"-" json:"clusterName,omitempty"`
+	// Namespace for current cost.
+	Namespace string `path:"-" query:"-" json:"namespace,omitempty"`
+	// Node for current cost.
+	Node string `path:"-" query:"-" json:"node,omitempty"`
+	// Controller name for the cost linked resource.
+	Controller string `path:"-" query:"-" json:"controller,omitempty"`
+	// Controller kind for the cost linked resource, deployment, statefulSet etc.
+	ControllerKind string `path:"-" query:"-" json:"controllerKind,omitempty"`
+	// Pod name for current cost.
+	Pod string `path:"-" query:"-" json:"pod,omitempty"`
+	// Container name for current cost.
+	Container string `path:"-" query:"-" json:"container,omitempty"`
+	// PV list for current cost linked.
+	Pvs map[string]types.PVCost `path:"-" query:"-" json:"pvs,omitempty"`
+	// Labels for the cost linked resource.
+	Labels map[string]string `path:"-" query:"-" json:"labels,omitempty"`
+	// Cost number.
+	TotalCost float64 `path:"-" query:"-" json:"totalCost,omitempty"`
+	// Cost currency.
+	Currency int `path:"-" query:"-" json:"currency,omitempty"`
+	// Cpu cost for current cost.
+	CPUCost float64 `path:"-" query:"-" json:"cpuCost,omitempty"`
+	// Cpu core requested.
+	CPUCoreRequest float64 `path:"-" query:"-" json:"cpuCoreRequest,omitempty"`
+	// GPU cost for current cost.
+	GPUCost float64 `path:"-" query:"-" json:"gpuCost,omitempty"`
+	// GPU core count.
+	GPUCount float64 `path:"-" query:"-" json:"gpuCount,omitempty"`
+	// Ram cost for current cost.
+	RAMCost float64 `path:"-" query:"-" json:"ramCost,omitempty"`
+	// Ram requested in byte.
+	RAMByteRequest float64 `path:"-" query:"-" json:"rambyteRequest,omitempty"`
+	// PV cost for current cost linked.
+	PVCost float64 `path:"-" query:"-" json:"pvCost,omitempty"`
+	// PV bytes for current cost linked.
+	PVBytes float64 `path:"-" query:"-" json:"pvBytes,omitempty"`
+	// LoadBalancer cost for current cost linked.
+	LoadBalancerCost float64 `path:"-" query:"-" json:"loadBalancerCost,omitempty"`
+	// CPU core average usage.
+	CPUCoreUsageAverage float64 `path:"-" query:"-" json:"cpuCoreUsageAverage,omitempty"`
+	// CPU core max usage.
+	CPUCoreUsageMax float64 `path:"-" query:"-" json:"cpuCoreUsageMax,omitempty"`
+	// Ram average usage in byte.
+	RAMByteUsageAverage float64 `path:"-" query:"-" json:"rambyteUsageAverage,omitempty"`
+	// Ram max usage in byte.
+	RAMByteUsageMax float64 `path:"-" query:"-" json:"rambyteUsageMax,omitempty"`
+
+	patchedEntity *CostReport `path:"-" query:"-" json:"-"`
+}
+
+// PatchModel returns the CostReport partition entity for patching.
+func (crpi *CostReportPatchInput) PatchModel() *CostReport {
+	if crpi == nil {
+		return nil
+	}
+
+	_cr := &CostReport{
+		StartTime:           crpi.StartTime,
+		EndTime:             crpi.EndTime,
+		Minutes:             crpi.Minutes,
+		Name:                crpi.Name,
+		Fingerprint:         crpi.Fingerprint,
+		ClusterName:         crpi.ClusterName,
+		Namespace:           crpi.Namespace,
+		Node:                crpi.Node,
+		Controller:          crpi.Controller,
+		ControllerKind:      crpi.ControllerKind,
+		Pod:                 crpi.Pod,
+		Container:           crpi.Container,
+		Pvs:                 crpi.Pvs,
+		Labels:              crpi.Labels,
+		TotalCost:           crpi.TotalCost,
+		Currency:            crpi.Currency,
+		CPUCost:             crpi.CPUCost,
+		CPUCoreRequest:      crpi.CPUCoreRequest,
+		GPUCost:             crpi.GPUCost,
+		GPUCount:            crpi.GPUCount,
+		RAMCost:             crpi.RAMCost,
+		RAMByteRequest:      crpi.RAMByteRequest,
+		PVCost:              crpi.PVCost,
+		PVBytes:             crpi.PVBytes,
+		LoadBalancerCost:    crpi.LoadBalancerCost,
+		CPUCoreUsageAverage: crpi.CPUCoreUsageAverage,
+		CPUCoreUsageMax:     crpi.CPUCoreUsageMax,
+		RAMByteUsageAverage: crpi.RAMByteUsageAverage,
+		RAMByteUsageMax:     crpi.RAMByteUsageMax,
+	}
+
+	return _cr
+}
+
+// Model returns the CostReport patched entity,
+// after validating.
+func (crpi *CostReportPatchInput) Model() *CostReport {
+	if crpi == nil {
+		return nil
+	}
+
+	return crpi.patchedEntity
+}
+
+// Validate checks the CostReportPatchInput entity.
+func (crpi *CostReportPatchInput) Validate() error {
+	if crpi == nil {
+		return errors.New("nil receiver")
+	}
+
+	return crpi.ValidateWith(crpi.inputConfig.Context, crpi.inputConfig.Client, nil)
+}
+
+// ValidateWith checks the CostReportPatchInput entity with the given context and client set.
+func (crpi *CostReportPatchInput) ValidateWith(ctx context.Context, cs ClientSet, cache map[string]any) error {
+	if cache == nil {
+		cache = map[string]any{}
+	}
+
+	if err := crpi.CostReportQueryInput.ValidateWith(ctx, cs, cache); err != nil {
+		return err
+	}
+
+	q := cs.CostReports().Query()
+
+	if crpi.Refer != nil {
+		if crpi.Refer.IsNumeric() {
+			q.Where(
+				costreport.ID(crpi.Refer.Int()))
+		} else {
+			return errors.New("invalid identify refer of costreport")
+		}
+	} else if crpi.ID != 0 {
+		q.Where(
+			costreport.ID(crpi.ID))
+	} else {
+		return errors.New("invalid identify of costreport")
+	}
+
+	q.Select(
+		costreport.WithoutFields()...,
+	)
+
+	var e *CostReport
+	{
+		// Get cache from previous validation.
+		queryStmt, queryArgs := q.sqlQuery(setContextOp(ctx, q.ctx, "cache")).Query()
+		ck := fmt.Sprintf("stmt=%v, args=%v", queryStmt, queryArgs)
+		if cv, existed := cache[ck]; !existed {
+			var err error
+			e, err = q.Only(ctx)
+			if err != nil {
+				return err
+			}
+
+			// Set cache for other validation.
+			cache[ck] = e
+		} else {
+			e = cv.(*CostReport)
+		}
+	}
+
+	_pm := crpi.PatchModel()
+
+	_po, err := json.PatchObject(*e, *_pm)
+	if err != nil {
+		return err
+	}
+
+	_obj := _po.(*CostReport)
+
+	if !e.StartTime.Equal(_obj.StartTime) {
+		return errors.New("field startTime is immutable")
+	}
+	if !e.EndTime.Equal(_obj.EndTime) {
+		return errors.New("field endTime is immutable")
+	}
+	if e.Minutes != _obj.Minutes {
+		return errors.New("field minutes is immutable")
+	}
+	if e.Name != _obj.Name {
+		return errors.New("field name is immutable")
+	}
+	if e.Fingerprint != _obj.Fingerprint {
+		return errors.New("field fingerprint is immutable")
+	}
+	if e.ClusterName != _obj.ClusterName {
+		return errors.New("field clusterName is immutable")
+	}
+	if e.Namespace != _obj.Namespace {
+		return errors.New("field namespace is immutable")
+	}
+	if e.Node != _obj.Node {
+		return errors.New("field node is immutable")
+	}
+	if e.Controller != _obj.Controller {
+		return errors.New("field controller is immutable")
+	}
+	if e.ControllerKind != _obj.ControllerKind {
+		return errors.New("field controllerKind is immutable")
+	}
+	if e.Pod != _obj.Pod {
+		return errors.New("field pod is immutable")
+	}
+	if e.Container != _obj.Container {
+		return errors.New("field container is immutable")
+	}
+	if !reflect.DeepEqual(e.Pvs, _obj.Pvs) {
+		return errors.New("field pvs is immutable")
+	}
+	if !reflect.DeepEqual(e.Labels, _obj.Labels) {
+		return errors.New("field labels is immutable")
+	}
+	if e.CPUCoreRequest != _obj.CPUCoreRequest {
+		return errors.New("field cpuCoreRequest is immutable")
+	}
+	if e.GPUCount != _obj.GPUCount {
+		return errors.New("field gpuCount is immutable")
+	}
+	if e.RAMByteRequest != _obj.RAMByteRequest {
+		return errors.New("field rambyteRequest is immutable")
+	}
+
+	crpi.patchedEntity = _obj
+	return nil
+}
+
 // CostReportQueryInput holds the query input of the CostReport entity,
 // please tags with `path:",inline"` if embedding.
 type CostReportQueryInput struct {
@@ -769,10 +1012,6 @@ func (crui *CostReportUpdateInputs) ValidateWith(ctx context.Context, cs ClientS
 	}
 
 	for i := range crui.Items {
-		if crui.Items[i] == nil {
-			continue
-		}
-
 		if err := crui.Items[i].ValidateWith(ctx, cs, cache); err != nil {
 			return err
 		}

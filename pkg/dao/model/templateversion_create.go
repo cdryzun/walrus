@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"entgo.io/ent/dialect"
@@ -16,7 +17,9 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 
-	"github.com/seal-io/walrus/pkg/dao/model/service"
+	"github.com/seal-io/walrus/pkg/dao/model/project"
+	"github.com/seal-io/walrus/pkg/dao/model/resource"
+	"github.com/seal-io/walrus/pkg/dao/model/resourcedefinitionmatchingrule"
 	"github.com/seal-io/walrus/pkg/dao/model/template"
 	"github.com/seal-io/walrus/pkg/dao/model/templateversion"
 	"github.com/seal-io/walrus/pkg/dao/types"
@@ -86,8 +89,50 @@ func (tvc *TemplateVersionCreate) SetSource(s string) *TemplateVersionCreate {
 }
 
 // SetSchema sets the "schema" field.
-func (tvc *TemplateVersionCreate) SetSchema(ts *types.TemplateSchema) *TemplateVersionCreate {
-	tvc.mutation.SetSchema(ts)
+func (tvc *TemplateVersionCreate) SetSchema(tvs types.TemplateVersionSchema) *TemplateVersionCreate {
+	tvc.mutation.SetSchema(tvs)
+	return tvc
+}
+
+// SetNillableSchema sets the "schema" field if the given value is not nil.
+func (tvc *TemplateVersionCreate) SetNillableSchema(tvs *types.TemplateVersionSchema) *TemplateVersionCreate {
+	if tvs != nil {
+		tvc.SetSchema(*tvs)
+	}
+	return tvc
+}
+
+// SetUiSchema sets the "uiSchema" field.
+func (tvc *TemplateVersionCreate) SetUiSchema(ts types.UISchema) *TemplateVersionCreate {
+	tvc.mutation.SetUiSchema(ts)
+	return tvc
+}
+
+// SetNillableUiSchema sets the "uiSchema" field if the given value is not nil.
+func (tvc *TemplateVersionCreate) SetNillableUiSchema(ts *types.UISchema) *TemplateVersionCreate {
+	if ts != nil {
+		tvc.SetUiSchema(*ts)
+	}
+	return tvc
+}
+
+// SetSchemaDefaultValue sets the "schema_default_value" field.
+func (tvc *TemplateVersionCreate) SetSchemaDefaultValue(b []byte) *TemplateVersionCreate {
+	tvc.mutation.SetSchemaDefaultValue(b)
+	return tvc
+}
+
+// SetProjectID sets the "project_id" field.
+func (tvc *TemplateVersionCreate) SetProjectID(o object.ID) *TemplateVersionCreate {
+	tvc.mutation.SetProjectID(o)
+	return tvc
+}
+
+// SetNillableProjectID sets the "project_id" field if the given value is not nil.
+func (tvc *TemplateVersionCreate) SetNillableProjectID(o *object.ID) *TemplateVersionCreate {
+	if o != nil {
+		tvc.SetProjectID(*o)
+	}
 	return tvc
 }
 
@@ -102,19 +147,39 @@ func (tvc *TemplateVersionCreate) SetTemplate(t *Template) *TemplateVersionCreat
 	return tvc.SetTemplateID(t.ID)
 }
 
-// AddServiceIDs adds the "services" edge to the Service entity by IDs.
-func (tvc *TemplateVersionCreate) AddServiceIDs(ids ...object.ID) *TemplateVersionCreate {
-	tvc.mutation.AddServiceIDs(ids...)
+// AddResourceIDs adds the "resources" edge to the Resource entity by IDs.
+func (tvc *TemplateVersionCreate) AddResourceIDs(ids ...object.ID) *TemplateVersionCreate {
+	tvc.mutation.AddResourceIDs(ids...)
 	return tvc
 }
 
-// AddServices adds the "services" edges to the Service entity.
-func (tvc *TemplateVersionCreate) AddServices(s ...*Service) *TemplateVersionCreate {
-	ids := make([]object.ID, len(s))
-	for i := range s {
-		ids[i] = s[i].ID
+// AddResources adds the "resources" edges to the Resource entity.
+func (tvc *TemplateVersionCreate) AddResources(r ...*Resource) *TemplateVersionCreate {
+	ids := make([]object.ID, len(r))
+	for i := range r {
+		ids[i] = r[i].ID
 	}
-	return tvc.AddServiceIDs(ids...)
+	return tvc.AddResourceIDs(ids...)
+}
+
+// AddResourceDefinitionIDs adds the "resource_definitions" edge to the ResourceDefinitionMatchingRule entity by IDs.
+func (tvc *TemplateVersionCreate) AddResourceDefinitionIDs(ids ...object.ID) *TemplateVersionCreate {
+	tvc.mutation.AddResourceDefinitionIDs(ids...)
+	return tvc
+}
+
+// AddResourceDefinitions adds the "resource_definitions" edges to the ResourceDefinitionMatchingRule entity.
+func (tvc *TemplateVersionCreate) AddResourceDefinitions(r ...*ResourceDefinitionMatchingRule) *TemplateVersionCreate {
+	ids := make([]object.ID, len(r))
+	for i := range r {
+		ids[i] = r[i].ID
+	}
+	return tvc.AddResourceDefinitionIDs(ids...)
+}
+
+// SetProject sets the "project" edge to the Project entity.
+func (tvc *TemplateVersionCreate) SetProject(p *Project) *TemplateVersionCreate {
+	return tvc.SetProjectID(p.ID)
 }
 
 // Mutation returns the TemplateVersionMutation object of the builder.
@@ -172,6 +237,10 @@ func (tvc *TemplateVersionCreate) defaults() error {
 		v := templateversion.DefaultSchema
 		tvc.mutation.SetSchema(v)
 	}
+	if _, ok := tvc.mutation.UiSchema(); !ok {
+		v := templateversion.DefaultUiSchema
+		tvc.mutation.SetUiSchema(v)
+	}
 	return nil
 }
 
@@ -217,6 +286,19 @@ func (tvc *TemplateVersionCreate) check() error {
 	}
 	if _, ok := tvc.mutation.Schema(); !ok {
 		return &ValidationError{Name: "schema", err: errors.New(`model: missing required field "TemplateVersion.schema"`)}
+	}
+	if v, ok := tvc.mutation.Schema(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "schema", err: fmt.Errorf(`model: validator failed for field "TemplateVersion.schema": %w`, err)}
+		}
+	}
+	if _, ok := tvc.mutation.UiSchema(); !ok {
+		return &ValidationError{Name: "uiSchema", err: errors.New(`model: missing required field "TemplateVersion.uiSchema"`)}
+	}
+	if v, ok := tvc.mutation.UiSchema(); ok {
+		if err := v.Validate(); err != nil {
+			return &ValidationError{Name: "uiSchema", err: fmt.Errorf(`model: validator failed for field "TemplateVersion.uiSchema": %w`, err)}
+		}
 	}
 	if _, ok := tvc.mutation.TemplateID(); !ok {
 		return &ValidationError{Name: "template", err: errors.New(`model: missing required edge "TemplateVersion.template"`)}
@@ -282,6 +364,14 @@ func (tvc *TemplateVersionCreate) createSpec() (*TemplateVersion, *sqlgraph.Crea
 		_spec.SetField(templateversion.FieldSchema, field.TypeJSON, value)
 		_node.Schema = value
 	}
+	if value, ok := tvc.mutation.UiSchema(); ok {
+		_spec.SetField(templateversion.FieldUiSchema, field.TypeJSON, value)
+		_node.UiSchema = value
+	}
+	if value, ok := tvc.mutation.SchemaDefaultValue(); ok {
+		_spec.SetField(templateversion.FieldSchemaDefaultValue, field.TypeBytes, value)
+		_node.SchemaDefaultValue = value
+	}
 	if nodes := tvc.mutation.TemplateIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.M2O,
@@ -300,21 +390,56 @@ func (tvc *TemplateVersionCreate) createSpec() (*TemplateVersion, *sqlgraph.Crea
 		_node.TemplateID = nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
-	if nodes := tvc.mutation.ServicesIDs(); len(nodes) > 0 {
+	if nodes := tvc.mutation.ResourcesIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
 			Rel:     sqlgraph.O2M,
 			Inverse: false,
-			Table:   templateversion.ServicesTable,
-			Columns: []string{templateversion.ServicesColumn},
+			Table:   templateversion.ResourcesTable,
+			Columns: []string{templateversion.ResourcesColumn},
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
-				IDSpec: sqlgraph.NewFieldSpec(service.FieldID, field.TypeString),
+				IDSpec: sqlgraph.NewFieldSpec(resource.FieldID, field.TypeString),
 			},
 		}
-		edge.Schema = tvc.schemaConfig.Service
+		edge.Schema = tvc.schemaConfig.Resource
 		for _, k := range nodes {
 			edge.Target.Nodes = append(edge.Target.Nodes, k)
 		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := tvc.mutation.ResourceDefinitionsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: true,
+			Table:   templateversion.ResourceDefinitionsTable,
+			Columns: []string{templateversion.ResourceDefinitionsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(resourcedefinitionmatchingrule.FieldID, field.TypeString),
+			},
+		}
+		edge.Schema = tvc.schemaConfig.ResourceDefinitionMatchingRule
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := tvc.mutation.ProjectIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.M2O,
+			Inverse: true,
+			Table:   templateversion.ProjectTable,
+			Columns: []string{templateversion.ProjectColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(project.FieldID, field.TypeString),
+			},
+		}
+		edge.Schema = tvc.schemaConfig.TemplateVersion
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_node.ProjectID = nodes[0]
 		_spec.Edges = append(_spec.Edges, edge)
 	}
 	return _node, _spec
@@ -345,6 +470,7 @@ func (tvc *TemplateVersionCreate) Set(obj *TemplateVersion) *TemplateVersionCrea
 	tvc.SetVersion(obj.Version)
 	tvc.SetSource(obj.Source)
 	tvc.SetSchema(obj.Schema)
+	tvc.SetUiSchema(obj.UiSchema)
 
 	// Optional.
 	if obj.CreateTime != nil {
@@ -352,6 +478,12 @@ func (tvc *TemplateVersionCreate) Set(obj *TemplateVersion) *TemplateVersionCrea
 	}
 	if obj.UpdateTime != nil {
 		tvc.SetUpdateTime(*obj.UpdateTime)
+	}
+	if !reflect.ValueOf(obj.SchemaDefaultValue).IsZero() {
+		tvc.SetSchemaDefaultValue(obj.SchemaDefaultValue)
+	}
+	if obj.ProjectID != "" {
+		tvc.SetProjectID(obj.ProjectID)
 	}
 
 	// Record the given object.
@@ -393,6 +525,11 @@ func (tvc *TemplateVersionCreate) SaveE(ctx context.Context, cbs ...func(ctx con
 				templateversion.Name(obj.Name),
 				templateversion.Version(obj.Version),
 			)
+		if obj.ProjectID != "" {
+			q.Where(templateversion.ProjectID(obj.ProjectID))
+		} else {
+			q.Where(templateversion.ProjectIDIsNil())
+		}
 		obj.ID, err = q.OnlyID(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("model: failed to query id of TemplateVersion entity: %w", err)
@@ -411,6 +548,12 @@ func (tvc *TemplateVersionCreate) SaveE(ctx context.Context, cbs ...func(ctx con
 		}
 		if _, set := tvc.mutation.Field(templateversion.FieldSource); set {
 			obj.Source = x.Source
+		}
+		if _, set := tvc.mutation.Field(templateversion.FieldSchemaDefaultValue); set {
+			obj.SchemaDefaultValue = x.SchemaDefaultValue
+		}
+		if _, set := tvc.mutation.Field(templateversion.FieldProjectID); set {
+			obj.ProjectID = x.ProjectID
 		}
 		obj.Edges = x.Edges
 	}
@@ -516,6 +659,11 @@ func (tvcb *TemplateVersionCreateBulk) SaveE(ctx context.Context, cbs ...func(ct
 					templateversion.Name(obj.Name),
 					templateversion.Version(obj.Version),
 				)
+			if obj.ProjectID != "" {
+				q.Where(templateversion.ProjectID(obj.ProjectID))
+			} else {
+				q.Where(templateversion.ProjectIDIsNil())
+			}
 			objs[i].ID, err = q.OnlyID(ctx)
 			if err != nil {
 				return nil, fmt.Errorf("model: failed to query id of TemplateVersion entity: %w", err)
@@ -536,6 +684,12 @@ func (tvcb *TemplateVersionCreateBulk) SaveE(ctx context.Context, cbs ...func(ct
 			}
 			if _, set := tvcb.builders[i].mutation.Field(templateversion.FieldSource); set {
 				objs[i].Source = x[i].Source
+			}
+			if _, set := tvcb.builders[i].mutation.Field(templateversion.FieldSchemaDefaultValue); set {
+				objs[i].SchemaDefaultValue = x[i].SchemaDefaultValue
+			}
+			if _, set := tvcb.builders[i].mutation.Field(templateversion.FieldProjectID); set {
+				objs[i].ProjectID = x[i].ProjectID
 			}
 			objs[i].Edges = x[i].Edges
 		}
@@ -676,7 +830,7 @@ func (u *TemplateVersionUpsert) UpdateUpdateTime() *TemplateVersionUpsert {
 }
 
 // SetSchema sets the "schema" field.
-func (u *TemplateVersionUpsert) SetSchema(v *types.TemplateSchema) *TemplateVersionUpsert {
+func (u *TemplateVersionUpsert) SetSchema(v types.TemplateVersionSchema) *TemplateVersionUpsert {
 	u.Set(templateversion.FieldSchema, v)
 	return u
 }
@@ -684,6 +838,36 @@ func (u *TemplateVersionUpsert) SetSchema(v *types.TemplateSchema) *TemplateVers
 // UpdateSchema sets the "schema" field to the value that was provided on create.
 func (u *TemplateVersionUpsert) UpdateSchema() *TemplateVersionUpsert {
 	u.SetExcluded(templateversion.FieldSchema)
+	return u
+}
+
+// SetUiSchema sets the "uiSchema" field.
+func (u *TemplateVersionUpsert) SetUiSchema(v types.UISchema) *TemplateVersionUpsert {
+	u.Set(templateversion.FieldUiSchema, v)
+	return u
+}
+
+// UpdateUiSchema sets the "uiSchema" field to the value that was provided on create.
+func (u *TemplateVersionUpsert) UpdateUiSchema() *TemplateVersionUpsert {
+	u.SetExcluded(templateversion.FieldUiSchema)
+	return u
+}
+
+// SetSchemaDefaultValue sets the "schema_default_value" field.
+func (u *TemplateVersionUpsert) SetSchemaDefaultValue(v []byte) *TemplateVersionUpsert {
+	u.Set(templateversion.FieldSchemaDefaultValue, v)
+	return u
+}
+
+// UpdateSchemaDefaultValue sets the "schema_default_value" field to the value that was provided on create.
+func (u *TemplateVersionUpsert) UpdateSchemaDefaultValue() *TemplateVersionUpsert {
+	u.SetExcluded(templateversion.FieldSchemaDefaultValue)
+	return u
+}
+
+// ClearSchemaDefaultValue clears the value of the "schema_default_value" field.
+func (u *TemplateVersionUpsert) ClearSchemaDefaultValue() *TemplateVersionUpsert {
+	u.SetNull(templateversion.FieldSchemaDefaultValue)
 	return u
 }
 
@@ -718,6 +902,9 @@ func (u *TemplateVersionUpsertOne) UpdateNewValues() *TemplateVersionUpsertOne {
 		}
 		if _, exists := u.create.mutation.Source(); exists {
 			s.SetIgnore(templateversion.FieldSource)
+		}
+		if _, exists := u.create.mutation.ProjectID(); exists {
+			s.SetIgnore(templateversion.FieldProjectID)
 		}
 	}))
 	return u
@@ -765,7 +952,7 @@ func (u *TemplateVersionUpsertOne) UpdateUpdateTime() *TemplateVersionUpsertOne 
 }
 
 // SetSchema sets the "schema" field.
-func (u *TemplateVersionUpsertOne) SetSchema(v *types.TemplateSchema) *TemplateVersionUpsertOne {
+func (u *TemplateVersionUpsertOne) SetSchema(v types.TemplateVersionSchema) *TemplateVersionUpsertOne {
 	return u.Update(func(s *TemplateVersionUpsert) {
 		s.SetSchema(v)
 	})
@@ -775,6 +962,41 @@ func (u *TemplateVersionUpsertOne) SetSchema(v *types.TemplateSchema) *TemplateV
 func (u *TemplateVersionUpsertOne) UpdateSchema() *TemplateVersionUpsertOne {
 	return u.Update(func(s *TemplateVersionUpsert) {
 		s.UpdateSchema()
+	})
+}
+
+// SetUiSchema sets the "uiSchema" field.
+func (u *TemplateVersionUpsertOne) SetUiSchema(v types.UISchema) *TemplateVersionUpsertOne {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.SetUiSchema(v)
+	})
+}
+
+// UpdateUiSchema sets the "uiSchema" field to the value that was provided on create.
+func (u *TemplateVersionUpsertOne) UpdateUiSchema() *TemplateVersionUpsertOne {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.UpdateUiSchema()
+	})
+}
+
+// SetSchemaDefaultValue sets the "schema_default_value" field.
+func (u *TemplateVersionUpsertOne) SetSchemaDefaultValue(v []byte) *TemplateVersionUpsertOne {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.SetSchemaDefaultValue(v)
+	})
+}
+
+// UpdateSchemaDefaultValue sets the "schema_default_value" field to the value that was provided on create.
+func (u *TemplateVersionUpsertOne) UpdateSchemaDefaultValue() *TemplateVersionUpsertOne {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.UpdateSchemaDefaultValue()
+	})
+}
+
+// ClearSchemaDefaultValue clears the value of the "schema_default_value" field.
+func (u *TemplateVersionUpsertOne) ClearSchemaDefaultValue() *TemplateVersionUpsertOne {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.ClearSchemaDefaultValue()
 	})
 }
 
@@ -974,6 +1196,9 @@ func (u *TemplateVersionUpsertBulk) UpdateNewValues() *TemplateVersionUpsertBulk
 			if _, exists := b.mutation.Source(); exists {
 				s.SetIgnore(templateversion.FieldSource)
 			}
+			if _, exists := b.mutation.ProjectID(); exists {
+				s.SetIgnore(templateversion.FieldProjectID)
+			}
 		}
 	}))
 	return u
@@ -1021,7 +1246,7 @@ func (u *TemplateVersionUpsertBulk) UpdateUpdateTime() *TemplateVersionUpsertBul
 }
 
 // SetSchema sets the "schema" field.
-func (u *TemplateVersionUpsertBulk) SetSchema(v *types.TemplateSchema) *TemplateVersionUpsertBulk {
+func (u *TemplateVersionUpsertBulk) SetSchema(v types.TemplateVersionSchema) *TemplateVersionUpsertBulk {
 	return u.Update(func(s *TemplateVersionUpsert) {
 		s.SetSchema(v)
 	})
@@ -1031,6 +1256,41 @@ func (u *TemplateVersionUpsertBulk) SetSchema(v *types.TemplateSchema) *Template
 func (u *TemplateVersionUpsertBulk) UpdateSchema() *TemplateVersionUpsertBulk {
 	return u.Update(func(s *TemplateVersionUpsert) {
 		s.UpdateSchema()
+	})
+}
+
+// SetUiSchema sets the "uiSchema" field.
+func (u *TemplateVersionUpsertBulk) SetUiSchema(v types.UISchema) *TemplateVersionUpsertBulk {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.SetUiSchema(v)
+	})
+}
+
+// UpdateUiSchema sets the "uiSchema" field to the value that was provided on create.
+func (u *TemplateVersionUpsertBulk) UpdateUiSchema() *TemplateVersionUpsertBulk {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.UpdateUiSchema()
+	})
+}
+
+// SetSchemaDefaultValue sets the "schema_default_value" field.
+func (u *TemplateVersionUpsertBulk) SetSchemaDefaultValue(v []byte) *TemplateVersionUpsertBulk {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.SetSchemaDefaultValue(v)
+	})
+}
+
+// UpdateSchemaDefaultValue sets the "schema_default_value" field to the value that was provided on create.
+func (u *TemplateVersionUpsertBulk) UpdateSchemaDefaultValue() *TemplateVersionUpsertBulk {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.UpdateSchemaDefaultValue()
+	})
+}
+
+// ClearSchemaDefaultValue clears the value of the "schema_default_value" field.
+func (u *TemplateVersionUpsertBulk) ClearSchemaDefaultValue() *TemplateVersionUpsertBulk {
+	return u.Update(func(s *TemplateVersionUpsert) {
+		s.ClearSchemaDefaultValue()
 	})
 }
 
